@@ -91,9 +91,24 @@ dependencies {
     implementation("com.google.api-client:google-api-client-android:2.2.0")
     implementation("com.google.apis:google-api-services-storage:v1-rev20230617-2.0.0")
     implementation("io.coil-kt:coil-compose:2.4.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1")
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.6.2")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
+    implementation("androidx.compose.material:material-icons-extended:1.6.5")
+    implementation("androidx.activity:activity-ktx:1.8.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-savedstate:2.7.0")
+    
+    // Media3 ExoPlayer for video playback - using version compatible with Android API 34
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.session)
+    
+    // Compose foundation pager for horizontal swiping
+    implementation("androidx.compose.foundation:foundation:1.6.5")
     
     // OkHttp for network debugging
     implementation("com.squareup.okhttp3:okhttp:4.11.0")

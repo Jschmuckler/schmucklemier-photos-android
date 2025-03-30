@@ -111,41 +111,4 @@ class GCPAuthenticationManager(private val context: Context) {
         }
     }
     
-    /**
-     * Gets the raw content of a file in Google Cloud Storage
-     * @param account The Google Sign-In account to use for authentication
-     * @param bucketName The name of the GCS bucket
-     * @param objectPath The path to the object within the bucket
-     * @return Raw content as a byte array
-     * Note: For large files, this could cause memory issues
-     */
-    suspend fun getFileContent(
-        account: GoogleSignInAccount, 
-        bucketName: String, 
-        objectPath: String
-    ): ByteArray {
-        return withContext(Dispatchers.IO) {
-            try {
-                Log.d(TAG, "Getting content for $bucketName/$objectPath")
-                
-                // Create a storage service client
-                val storage = createStorageService(account)
-                
-                // Get the object with media download
-                val getRequest = storage.objects().get(bucketName, objectPath)
-                getRequest.alt = "media" // Important! This tells the API to return the actual content
-                
-                // Execute the request and get the content
-                val outputStream = java.io.ByteArrayOutputStream()
-                getRequest.executeMediaAndDownloadTo(outputStream)
-                
-                Log.d(TAG, "File content downloaded successfully, size: ${outputStream.size()}")
-                outputStream.toByteArray()
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error getting file content: ${e.message}", e)
-                throw e
-            }
-        }
-    }
 }
