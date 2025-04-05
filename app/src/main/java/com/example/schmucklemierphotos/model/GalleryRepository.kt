@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.schmucklemierphotos.GCPStorageManager
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.api.services.storage.Storage
+import com.example.schmucklemierphotos.utils.ThumbnailUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -76,19 +77,23 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
                 val directories = storageManager.listBucketDirectories(account, bucketName, prefix = prefix)
                 val files = storageManager.listBucketFiles(account, bucketName, prefix = prefix)
 
-                // Process directories into folder items
-                val folderItems = directories.map { dirPath ->
-                    GalleryItem.Folder(
-                        name = dirPath,
-                        path = dirPath,
-                        lastModified = null // We don't have this info from GCS prefixes
-                    )
-                }
+                // Process directories into folder items and filter out THUMBS folders
+                val folderItems = directories
+                    .filter { !ThumbnailUtils.isThumbnailFolder(it) }  // Filter out THUMBS folders
+                    .map { dirPath ->
+                        GalleryItem.Folder(
+                            name = dirPath,
+                            path = dirPath,
+                            lastModified = null // We don't have this info from GCS prefixes
+                        )
+                    }
 
                 // Process files into file items
                 val fileItems = files.mapNotNull { fileObject ->
-                    // Skip files that are the prefix itself or are empty prefixes
-                    if (fileObject.name == prefix || fileObject.name.endsWith("/")) {
+                    // Skip files that are the prefix itself, empty prefixes, or thumbnail files
+                    if (fileObject.name == prefix || 
+                        fileObject.name.endsWith("/") || 
+                        ThumbnailUtils.isThumbnailFile(fileObject.name)) {
                         return@mapNotNull null
                     }
 

@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.example.schmucklemierphotos.model.GalleryItem
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -53,12 +55,14 @@ fun MediaViewerScreen(
     previewableItems: List<GalleryItem>,
     initialIndex: Int,
     mediaUrls: Map<String, String>,
+    thumbnailUrls: Map<String, String>,
     imageLoader: ImageLoader,
     account: GoogleSignInAccount,
     bucketName: String,
     onNavigateToPrevious: (GoogleSignInAccount, String) -> Unit,
     onNavigateToNext: (GoogleSignInAccount, String) -> Unit,
     onPreCacheAdjacent: (GoogleSignInAccount, String) -> Unit,
+    onPreCacheThumbnails: (GoogleSignInAccount, String, Int) -> Unit,
     onClose: () -> Unit
 ) {
     // Whether to show controls
@@ -114,6 +118,9 @@ fun MediaViewerScreen(
         scale = 1f
         offsetX = 0f
         offsetY = 0f
+        
+        // Pre-cache thumbnails for surrounding items (pre-cache 2 in each direction)
+        onPreCacheThumbnails(account, bucketName, 2)
     }
     
     DisposableEffect(Unit) {
@@ -245,7 +252,17 @@ fun MediaViewerScreen(
                                         onNavigateToNext(account, bucketName)
                                     }
                                     
-                                    coroutineScope.launch {
+                                    // Priority pre-caching: load thumbnails first in a separate coroutine
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        // First pre-cache thumbnails as they load faster
+                                        onPreCacheThumbnails(account, bucketName, 2)
+                                    }
+                                    
+                                    // Then launch another coroutine for full-size images (lower priority)
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        // Small delay to ensure thumbnails get priority
+                                        delay(100)
+                                        // Then pre-cache the full-size images
                                         onPreCacheAdjacent(account, bucketName)
                                     }
                                 }
@@ -281,6 +298,7 @@ fun MediaViewerScreen(
                     ImageContent(
                         image = currentMediaItem,
                         imageUrl = mediaUrl,
+                        thumbnailUrl = thumbnailUrls[currentMediaItem.path],
                         imageLoader = imageLoader,
                         scale = scale,
                         offsetX = offsetX,

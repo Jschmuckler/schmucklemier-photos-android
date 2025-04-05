@@ -201,6 +201,7 @@ class MainActivity : FragmentActivity() {
                     val selectedImage by galleryViewModel.selectedImage.collectAsState()
                     val selectedVideo by galleryViewModel.selectedVideo.collectAsState()
                     val mediaUrls by galleryViewModel.mediaUrls.collectAsState()
+                    val thumbnailUrls by galleryViewModel.thumbnailUrls.collectAsState()
                     
                     if (showGallery.value && isAuthenticated.value && account != null) {
                         // Show gallery when authenticated
@@ -224,13 +225,22 @@ class MainActivity : FragmentActivity() {
                                     galleryViewModel.getMediaUrl(account, BUCKET_NAME, currentItem.path)
                                 }
                                 
-                                // Pre-cache adjacent items
+                                // First, ensure thumbnails are loaded for current item
+                                if (currentItem != null && thumbnailUrls[currentItem.path] == null) {
+                                    galleryViewModel.getThumbnailUrl(account, BUCKET_NAME, currentItem.path)
+                                }
+                                
+                                // Pre-cache thumbnail images first (higher priority)
+                                galleryViewModel.preCacheThumbnails(account, BUCKET_NAME, 2)
+                                
+                                // Then pre-cache full-size images after thumbnails
                                 galleryViewModel.preCacheAdjacentItems(account, BUCKET_NAME)
                                 
                                 MediaViewerScreen(
                                     previewableItems = previewableItems,
                                     initialIndex = currentIndex,
                                     mediaUrls = mediaUrls,
+                                    thumbnailUrls = thumbnailUrls,
                                     imageLoader = imageLoader,
                                     account = account,
                                     bucketName = BUCKET_NAME,
@@ -242,6 +252,9 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onPreCacheAdjacent = { acc, bucket ->
                                         galleryViewModel.preCacheAdjacentItems(acc, bucket)
+                                    },
+                                    onPreCacheThumbnails = { acc, bucket, range ->
+                                        galleryViewModel.preCacheThumbnails(acc, bucket, range)
                                     },
                                     onClose = { 
                                         galleryViewModel.clearSelectedImage()

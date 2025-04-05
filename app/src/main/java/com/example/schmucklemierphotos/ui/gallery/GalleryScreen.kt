@@ -2,6 +2,8 @@ package com.example.schmucklemierphotos.ui.gallery
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +49,11 @@ import com.example.schmucklemierphotos.model.GalleryItem
 import com.example.schmucklemierphotos.model.GalleryRepository
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 
+// These will be initialized after all imports are loaded
+val LocalGalleryViewModel = compositionLocalOf<GalleryViewModel> { error("No GalleryViewModel provided") }
+val LocalGoogleAccount = compositionLocalOf<Any> { error("No GoogleSignInAccount provided") } // Will be cast properly
+val LocalBucketName = compositionLocalOf<String> { error("No bucketName provided") }
+
 private const val TAG = "GalleryScreen"
 
 /**
@@ -65,6 +72,12 @@ fun GalleryScreen(
     onNavigateToDocument: (GalleryItem.DocumentFile) -> Unit,
     onLogout: () -> Unit
 ) {
+    // Provide CompositionLocal values for child components
+    CompositionLocalProvider(
+        LocalGalleryViewModel provides galleryViewModel,
+        LocalGoogleAccount provides account as Any, // Cast to Any to match LocalGoogleAccount type
+        LocalBucketName provides bucketName
+    ) {
     val items by galleryRepository.galleryItems.collectAsState()
     val currentPath by galleryRepository.currentPath.collectAsState()
     val isLoading by galleryRepository.isLoading.collectAsState()
@@ -277,6 +290,7 @@ fun GalleryScreen(
             galleryViewModel.updateScrollPosition(gridState)
         }
     }
+  } // Close CompositionLocalProvider
 }
 
 /**
@@ -292,6 +306,12 @@ private fun GalleryGrid(
     onVideoClick: (GalleryItem.VideoFile) -> Unit,
     onDocumentClick: (GalleryItem.DocumentFile) -> Unit
 ) {
+    // Get view model and account info from parent components
+    val galleryViewModel = LocalGalleryViewModel.current
+    val account = LocalGoogleAccount.current as GoogleSignInAccount // Cast back to proper type
+    val bucketName = LocalBucketName.current
+    val thumbnailUrls by galleryViewModel.thumbnailUrls.collectAsState()
+    
     LazyVerticalGrid(
         state = gridState,
         columns = GridCells.Adaptive(minSize = 160.dp), // Adaptive layout for different screen sizes
@@ -301,9 +321,24 @@ private fun GalleryGrid(
         modifier = Modifier.fillMaxSize()
     ) {
         items(items) { item ->
+            // Request thumbnail URL for media items
+            LaunchedEffect(item) {
+                when (item) {
+                    is GalleryItem.ImageFile, is GalleryItem.VideoFile -> {
+                        // Request thumbnail URL to be loaded
+                        galleryViewModel.getThumbnailUrl(account, bucketName, item.path)
+                    }
+                    else -> { /* No thumbnail needed */ }
+                }
+            }
+            
+            // Get the thumbnail URL for this item if available
+            val thumbnailUrl = thumbnailUrls[item.path]
+            
             GalleryCard(
                 item = item,
                 imageLoader = imageLoader,
+                thumbnailUrl = thumbnailUrl,
                 onClick = {
                     when (item) {
                         is GalleryItem.Folder -> onFolderClick(item)

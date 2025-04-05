@@ -1,6 +1,7 @@
 package com.example.schmucklemierphotos.ui.gallery
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.lifecycle.ViewModel
@@ -12,11 +13,15 @@ import com.example.schmucklemierphotos.cache.FileCache
 import com.example.schmucklemierphotos.model.GalleryItem
 import com.example.schmucklemierphotos.model.GalleryRepository
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Collections
+import com.example.schmucklemierphotos.utils.ThumbnailUtils
 
 /**
  * ViewModel for managing the gallery state and operations
@@ -28,6 +33,9 @@ class GalleryViewModel(
 
     // File cache for caching files locally
     private val fileCache = FileCache(context)
+    
+    // Track files that are currently being downloaded to prevent duplicate downloads
+    private val downloadsInProgress = Collections.synchronizedSet(mutableSetOf<String>())
 
     // Selected image for viewing
     private val _selectedImage = MutableStateFlow<GalleryItem.ImageFile?>(null)
@@ -48,6 +56,10 @@ class GalleryViewModel(
     // Image/Video URLs for authenticated access
     private val _mediaUrls = MutableStateFlow<Map<String, String>>(emptyMap())
     val mediaUrls: StateFlow<Map<String, String>> = _mediaUrls.asStateFlow()
+    
+    // Thumbnail URLs for grid view
+    private val _thumbnailUrls = MutableStateFlow<Map<String, String>>(emptyMap())
+    val thumbnailUrls: StateFlow<Map<String, String>> = _thumbnailUrls.asStateFlow()
 
     // Track navigation path history with scroll positions
     private val navigationHistory = mutableListOf<NavigationState>()
@@ -143,27 +155,81 @@ class GalleryViewModel(
         bucketName: String, 
         filePath: String
     ) {
+        // Check if this file is already being downloaded
+        if (!downloadsInProgress.add(filePath)) {
+            Log.d("GalleryViewModel", "Download already in progress for $filePath, skipping")
+            return
+        }
+        
         try {
+            Log.d("GalleryViewModel", "Starting download for $filePath")
+            
+            // Check one more time if the file exists locally
+            if (fileCache.contains(filePath)) {
+                Log.d("GalleryViewModel", "File $filePath already cached, skipping download")
+                return
+            }
+            
             // Download the file content
             val fileContent = repository.getFileContent(account, bucketName, filePath)
             
             // Get the MIME type based on file extension
-            val mimeType = when {
-                filePath.endsWith(".jpg", ignoreCase = true) 
-                    || filePath.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
-                filePath.endsWith(".png", ignoreCase = true) -> "image/png"
-                filePath.endsWith(".gif", ignoreCase = true) -> "image/gif"
-                filePath.endsWith(".webp", ignoreCase = true) -> "image/webp"
-                filePath.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
-                filePath.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
-                filePath.endsWith(".webm", ignoreCase = true) -> "video/webm"
-                else -> null
-            }
+            val mimeType = ThumbnailUtils.getMimeTypeFromPath(filePath)
             
             // Cache the file
             fileCache.putFile(filePath, fileContent, mimeType)
+            Log.d("GalleryViewModel", "Download completed for $filePath")
         } catch (e: Exception) {
             // Log but don't fail the app if caching fails
+            Log.e("GalleryViewModel", "Failed to download $filePath: ${e.message}")
+        } finally {
+            // Always remove from in-progress set when finished, even if there was an error
+            downloadsInProgress.remove(filePath)
+        }
+    }
+    
+    /**
+     * Gets an authenticated URL for a thumbnail
+     * @param account The authenticated Google account
+     * @param bucketName The GCS bucket name
+     * @param originalPath The path to the original file
+     */
+    fun getThumbnailUrl(account: GoogleSignInAccount, bucketName: String, originalPath: String) {
+        viewModelScope.launch {
+            try {
+                // Generate the thumbnail path
+                val thumbnailPath = ThumbnailUtils.generateThumbnailPath(originalPath)
+                
+                // Check if we already have the URL cached
+                if (_thumbnailUrls.value.containsKey(originalPath)) {
+                    return@launch
+                }
+                
+                // Check if we have the thumbnail file cached locally
+                val cachedFile = fileCache.getFile(thumbnailPath)
+                if (cachedFile != null) {
+                    // Use the cached file URI
+                    val fileUri = "file://${cachedFile.absolutePath}"
+                    _thumbnailUrls.value = _thumbnailUrls.value + (originalPath to fileUri)
+                    return@launch
+                }
+                
+                try {
+                    // Get the thumbnail URL from the repository
+                    val url = repository.getImageUrl(account, bucketName, thumbnailPath)
+                    
+                    // Store the URL in our thumbnail map, keyed by the original path for easy lookup
+                    _thumbnailUrls.value = _thumbnailUrls.value + (originalPath to url)
+                    
+                    // Download and cache the thumbnail in the background
+                    cacheFileFromUrl(account, bucketName, thumbnailPath)
+                } catch (e: Exception) {
+                    // If thumbnail doesn't exist, just don't add any URL
+                    // The UI will show a fallback icon
+                }
+            } catch (e: Exception) {
+                // Handle error silently for thumbnails
+            }
         }
     }
 
@@ -211,7 +277,7 @@ class GalleryViewModel(
     }
     
     /**
-     * Pre-caches adjacent media items
+     * Pre-caches adjacent media items (full-size images)
      */
     fun preCacheAdjacentItems(account: GoogleSignInAccount, bucketName: String) {
         viewModelScope.launch {
@@ -224,11 +290,51 @@ class GalleryViewModel(
             val prevIndex = if (currentPos > 0) currentPos - 1 else items.size - 1
             val nextIndex = if (currentPos < items.size - 1) currentPos + 1 else 0
             
-            // Only pre-cache images, not videos, as specified in the requirements
+            Log.d("GalleryViewModel", "Pre-caching full-size images for positions $prevIndex and $nextIndex")
+            
+            // Pre-cache both images and videos
             listOf(prevIndex, nextIndex).forEach { index ->
                 val item = items[index]
-                if (item is GalleryItem.ImageFile && !_mediaUrls.value.containsKey(item.path)) {
+                
+                // Always get thumbnails first for faster display
+                getThumbnailUrl(account, bucketName, item.path)
+                
+                // Then get full-size media if not already cached
+                if (!_mediaUrls.value.containsKey(item.path)) {
                     getMediaUrl(account, bucketName, item.path)
+                }
+            }
+        }
+    }
+    
+    /**
+     * Pre-caches thumbnails for items in the specified range around the current position
+     * @param account The Google Sign-In account
+     * @param bucketName The GCS bucket name
+     * @param range The number of items to pre-cache in each direction (default: 2)
+     */
+    fun preCacheThumbnails(account: GoogleSignInAccount, bucketName: String, range: Int = 2) {
+        viewModelScope.launch {
+            val currentPos = _currentPreviewPosition.value
+            val items = _previewableItems.value
+            
+            if (items.isEmpty() || currentPos < 0 || currentPos >= items.size) return@launch
+
+            // Calculate indices for items to pre-cache, handling wrapping
+            val indices = mutableSetOf<Int>()
+            for (offset in -range..range) {
+                if (offset == 0) continue // Skip current position as it should already be loaded
+                
+                val index = (currentPos + offset).mod(items.size)
+                indices.add(index)
+            }
+            
+            // Pre-cache thumbnails for the determined indices
+            indices.forEach { index ->
+                val item = items[index]
+                // Get thumbnails for both images and videos
+                if (!_thumbnailUrls.value.containsKey(item.path)) {
+                    getThumbnailUrl(account, bucketName, item.path)
                 }
             }
         }
@@ -251,13 +357,41 @@ class GalleryViewModel(
                 is GalleryItem.ImageFile -> {
                     _selectedVideo.value = null
                     _selectedImage.value = item
-                    getMediaUrl(account, bucketName, item.path)
-                    preCacheAdjacentItems(account, bucketName)
+                    
+                    // IMPORTANT: First get thumbnail URL with high priority
+                    // Use a separate coroutine to ensure it's started immediately
+                    viewModelScope.launch(Dispatchers.IO) {
+                        getThumbnailUrl(account, bucketName, item.path)
+                        
+                        // Pre-cache thumbnails first
+                        preCacheThumbnails(account, bucketName, 2)
+                    }
+                    
+                    // Then load full image and pre-cache in a separate coroutine with lower priority
+                    viewModelScope.launch(Dispatchers.IO) {
+                        // Small delay to ensure thumbnails get priority
+                        delay(50)
+                        getMediaUrl(account, bucketName, item.path)
+                        
+                        // Then pre-cache full-size images
+                        delay(50)
+                        preCacheAdjacentItems(account, bucketName)
+                    }
                 }
                 is GalleryItem.VideoFile -> {
                     _selectedImage.value = null
                     _selectedVideo.value = item
-                    getMediaUrl(account, bucketName, item.path)
+                    
+                    // Prioritize thumbnail loading in a separate coroutine
+                    viewModelScope.launch(Dispatchers.IO) { 
+                        getThumbnailUrl(account, bucketName, item.path)
+                    }
+                    
+                    // Then load the full video in a separate coroutine
+                    viewModelScope.launch(Dispatchers.IO) {
+                        delay(50) // Small delay to prioritize thumbnail
+                        getMediaUrl(account, bucketName, item.path)
+                    }
                 }
                 else -> { /* Not previewable */ }
             }
@@ -281,13 +415,41 @@ class GalleryViewModel(
                 is GalleryItem.ImageFile -> {
                     _selectedVideo.value = null
                     _selectedImage.value = item
-                    getMediaUrl(account, bucketName, item.path)
-                    preCacheAdjacentItems(account, bucketName)
+                    
+                    // IMPORTANT: First get thumbnail URL with high priority
+                    // Use a separate coroutine to ensure it's started immediately
+                    viewModelScope.launch(Dispatchers.IO) {
+                        getThumbnailUrl(account, bucketName, item.path)
+                        
+                        // Pre-cache thumbnails first
+                        preCacheThumbnails(account, bucketName, 2)
+                    }
+                    
+                    // Then load full image and pre-cache in a separate coroutine with lower priority
+                    viewModelScope.launch(Dispatchers.IO) {
+                        // Small delay to ensure thumbnails get priority
+                        delay(50)
+                        getMediaUrl(account, bucketName, item.path)
+                        
+                        // Then pre-cache full-size images
+                        delay(50)
+                        preCacheAdjacentItems(account, bucketName)
+                    }
                 }
                 is GalleryItem.VideoFile -> {
                     _selectedImage.value = null
                     _selectedVideo.value = item
-                    getMediaUrl(account, bucketName, item.path)
+                    
+                    // Prioritize thumbnail loading in a separate coroutine
+                    viewModelScope.launch(Dispatchers.IO) { 
+                        getThumbnailUrl(account, bucketName, item.path)
+                    }
+                    
+                    // Then load the full video in a separate coroutine
+                    viewModelScope.launch(Dispatchers.IO) {
+                        delay(50) // Small delay to prioritize thumbnail
+                        getMediaUrl(account, bucketName, item.path)
+                    }
                 }
                 else -> { /* Not previewable */ }
             }
