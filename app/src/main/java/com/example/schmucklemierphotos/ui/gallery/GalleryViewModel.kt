@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Collections
 import com.example.schmucklemierphotos.utils.ThumbnailUtils
+import java.io.IOException
 
 /**
  * ViewModel for managing the gallery state and operations
@@ -127,6 +128,20 @@ class GalleryViewModel(
                     return@launch
                 }
                 
+                // Check if this is a video file
+                if (repository.isVideoFile(filePath)) {
+                    // For videos, use streaming URL instead of direct download to prevent OOM
+                    try {
+                        val streamingUrl = repository.getStreamingUrl(account, bucketName, filePath)
+                        _mediaUrls.value = _mediaUrls.value + (filePath to streamingUrl)
+                        Log.d("GalleryViewModel", "Using streaming URL for video ${filePath}")
+                        return@launch
+                    } catch (e: Exception) {
+                        Log.e("GalleryViewModel", "Error getting streaming URL for video: ${e.message}")
+                        // Continue to standard path as fallback
+                    }
+                }
+                
                 // Check if low bandwidth mode is active
                 if (settingsManager.settings.value.lowBandwidthMode) {
                     // In low bandwidth mode, use the thumbnail instead of the full image
@@ -174,8 +189,10 @@ class GalleryViewModel(
                 // Store the URL in our map
                 _mediaUrls.value = _mediaUrls.value + (filePath to url)
                 
-                // Download and cache the file in the background
-                cacheFileFromUrl(account, bucketName, filePath)
+                // For non-video files, download and cache in the background
+                if (!repository.isVideoFile(filePath)) {
+                    cacheFileFromUrl(account, bucketName, filePath)
+                }
             } catch (e: Exception) {
                 Log.e("GalleryViewModel", "Error getting media URL for $filePath: ${e.message}")
             }
@@ -183,7 +200,7 @@ class GalleryViewModel(
     }
 
     /**
-     * Downloads and caches a file from GCP Storage
+     * Downloads and caches a file from GCP Storage with error handling and memory constraints
      */
     private suspend fun cacheFileFromUrl(
         account: GoogleSignInAccount,
@@ -205,17 +222,39 @@ class GalleryViewModel(
                 return
             }
             
-            // Download the file content
-            val fileContent = repository.getFileContent(account, bucketName, filePath)
+            // Skip downloading videos - they should use streaming instead
+            if (repository.isVideoFile(filePath)) {
+                Log.d("GalleryViewModel", "Skipping cache download for video file: $filePath")
+                return
+            }
             
-            // Get the MIME type based on file extension
-            val mimeType = ThumbnailUtils.getMimeTypeFromPath(filePath)
-            
-            // Cache the file
-            fileCache.putFile(filePath, fileContent, mimeType)
-            Log.d("GalleryViewModel", "Download completed for $filePath")
+            try {
+                // Download the file content with potential size limit error handling
+                val fileContent = repository.getFileContent(account, bucketName, filePath)
+                
+                // Get the MIME type based on file extension
+                val mimeType = ThumbnailUtils.getMimeTypeFromPath(filePath)
+                
+                // Try to cache the file - may throw exception if too large
+                try {
+                    fileCache.putFile(filePath, fileContent, mimeType)
+                    Log.d("GalleryViewModel", "Download completed and cached for $filePath")
+                } catch (e: IOException) {
+                    // If caching fails due to size, still keep the URL but don't try to cache
+                    Log.w("GalleryViewModel", "File too large for cache: $filePath: ${e.message}")
+                    // We don't rethrow - the URL is still valid for viewing
+                }
+            } catch (e: IllegalArgumentException) {
+                // This is thrown when a file is too large for direct download
+                Log.w("GalleryViewModel", "File too large for direct download: $filePath: ${e.message}")
+                
+                // For these files, use streaming URL instead
+                val streamingUrl = repository.getStreamingUrl(account, bucketName, filePath)
+                _mediaUrls.value = _mediaUrls.value + (filePath to streamingUrl)
+                Log.d("GalleryViewModel", "Using streaming URL instead for large file: $filePath")
+            }
         } catch (e: Exception) {
-            // Log but don't fail the app if caching fails
+            // Log but don't fail the app if downloading fails
             Log.e("GalleryViewModel", "Failed to download $filePath: ${e.message}")
         } finally {
             // Always remove from in-progress set when finished, even if there was an error
@@ -436,10 +475,16 @@ class GalleryViewModel(
                         getThumbnailUrl(account, bucketName, item.path)
                     }
                     
-                    // Then load the full video in a separate coroutine
+                    // For videos, use streaming URL instead of direct download to prevent OOM
                     viewModelScope.launch(Dispatchers.IO) {
-                        delay(50) // Small delay to prioritize thumbnail
-                        getMediaUrl(account, bucketName, item.path)
+                        try {
+                            // Use streaming URL for videos
+                            val streamingUrl = repository.getStreamingUrl(account, bucketName, item.path)
+                            _mediaUrls.value = _mediaUrls.value + (item.path to streamingUrl)
+                            Log.d("GalleryViewModel", "Using streaming URL for video ${item.path}")
+                        } catch (e: Exception) {
+                            Log.e("GalleryViewModel", "Error getting streaming URL for video: ${e.message}")
+                        }
                     }
                 }
                 else -> { /* Not previewable */ }
@@ -494,10 +539,16 @@ class GalleryViewModel(
                         getThumbnailUrl(account, bucketName, item.path)
                     }
                     
-                    // Then load the full video in a separate coroutine
+                    // For videos, use streaming URL instead of direct download to prevent OOM
                     viewModelScope.launch(Dispatchers.IO) {
-                        delay(50) // Small delay to prioritize thumbnail
-                        getMediaUrl(account, bucketName, item.path)
+                        try {
+                            // Use streaming URL for videos
+                            val streamingUrl = repository.getStreamingUrl(account, bucketName, item.path)
+                            _mediaUrls.value = _mediaUrls.value + (item.path to streamingUrl)
+                            Log.d("GalleryViewModel", "Using streaming URL for video ${item.path}")
+                        } catch (e: Exception) {
+                            Log.e("GalleryViewModel", "Error getting streaming URL for video: ${e.message}")
+                        }
                     }
                 }
                 else -> { /* Not previewable */ }

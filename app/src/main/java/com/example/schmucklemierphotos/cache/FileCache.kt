@@ -68,8 +68,18 @@ class FileCache(
      * @param mimeType Optional MIME type of the file
      */
     suspend fun putFile(key: String, data: ByteArray, mimeType: String? = null): File = withContext(Dispatchers.IO) {
+        // Check file size - skip very large files to prevent memory issues
+        val fileSize = data.size.toLong()
+        
+        // Skip caching extremely large files (over 40% of max cache size)
+        val maxSingleFileSize = maxSizeBytes * 0.4
+        if (fileSize > maxSingleFileSize) {
+            Log.w(TAG, "File too large to cache: $key, size: $fileSize bytes exceeds $maxSingleFileSize bytes")
+            throw IOException("File too large to cache: $fileSize bytes")
+        }
+        
         // Ensure we have space
-        ensureCacheSizeLimit(data.size.toLong())
+        ensureCacheSizeLimit(fileSize)
 
         // Write the file to cache
         val cacheFile = getCacheFile(key)

@@ -182,9 +182,35 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
      * @param bucketName The name of the GCS bucket
      * @param filePath The path to the file within the bucket
      * @return Raw file content as byte array
+     * @throws IllegalArgumentException if file is too large for direct download
      */
     suspend fun getFileContent(account: GoogleSignInAccount, bucketName: String, filePath: String): ByteArray {
+        // For videos, we don't want to load the entire file - it will cause OOM
+        if (isVideoFile(filePath)) {
+            throw IllegalArgumentException("Videos should use streaming URL instead of direct download")
+        }
+        
         return storageManager.getFileContent(account, bucketName, filePath)
+    }
+    
+    /**
+     * Gets a direct streaming URL for a video or large file
+     * @param account The authenticated Google account
+     * @param bucketName The name of the GCS bucket
+     * @param filePath The path to the file within the bucket
+     * @return A streaming URL for the file
+     */
+    suspend fun getStreamingUrl(account: GoogleSignInAccount, bucketName: String, filePath: String): String {
+        return storageManager.getStreamingUrl(account, bucketName, filePath)
+    }
+    
+    /**
+     * Checks if a file is a video based on its extension
+     * @param filePath The path to check
+     * @return true if the file is a video, false otherwise
+     */
+    fun isVideoFile(filePath: String): Boolean {
+        return VIDEO_EXTENSIONS.any { filePath.lowercase().endsWith(it) }
     }
 
     /**
