@@ -2,11 +2,13 @@ package com.example.schmucklemierphotos
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +34,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import androidx.fragment.app.FragmentTransaction
+import com.example.schmucklemierphotos.ui.settings.SettingsFragment
+import android.os.Handler
+import android.os.Looper
+import android.view.MotionEvent
+import android.content.Context
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.compose.rememberAsyncImagePainter
@@ -50,6 +58,8 @@ import com.google.api.services.storage.StorageScopes
 import com.example.schmucklemierphotos.BuildConfig
 import com.example.schmucklemierphotos.ui.gallery.MediaViewerScreen
 import com.example.schmucklemierphotos.ui.gallery.VideoPlayerScreen
+import com.example.schmucklemierphotos.ui.settings.SettingsManager
+import com.example.schmucklemierphotos.ui.theme.SchmucklemierPhotosTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,7 +73,6 @@ class MainActivity : FragmentActivity() {
     private companion object {
         private const val TAG = "MainActivity"
         private const val BUCKET_NAME = "schmucklemier-long-term"
-        private const val IMAGE_PATH = "2024/J&C_Wedding/Professional_Cora/Group_Shots/EveryoneBeforeHike.jpg"
     }
 
     private lateinit var gcpAuthManager: GCPAuthenticationManager
@@ -79,9 +88,15 @@ class MainActivity : FragmentActivity() {
     // UI state - using ViewModel pattern for configuration change survival
     private val viewState = MainActivityViewState()
     
+    // Handler for auto logout
+    private val handler = Handler(Looper.getMainLooper())
+    private var autoLogoutRunnable: Runnable? = null
+    
+    // Last authenticated time for remember login feature
+    private val PREF_LAST_AUTH_TIME = "last_auth_time"
+    
     // Accessor properties for state
     private val statusMessage get() = viewState.statusMessage
-    private val imageUrl get() = viewState.imageUrl
     private val bucketFolders get() = viewState.bucketFolders
     private val isAuthenticated get() = viewState.isAuthenticated
     private val showGallery get() = viewState.showGallery
@@ -89,8 +104,7 @@ class MainActivity : FragmentActivity() {
     
     // View state class to survive configuration changes
     class MainActivityViewState {
-        val statusMessage = mutableStateOf("Press the button to authenticate")
-        val imageUrl = mutableStateOf<String?>(null)
+        val statusMessage = mutableStateOf("Welcome to Photo Gallery")
         val bucketFolders = mutableStateOf<List<String>>(emptyList())
         val isAuthenticated = mutableStateOf(false)
         val showGallery = mutableStateOf(false)
@@ -117,6 +131,12 @@ class MainActivity : FragmentActivity() {
                 authenticatedAccount.value = account
                 isAuthenticated.value = true
                 showGallery.value = true
+                
+                // Save authentication time for remember login feature
+                saveLastAuthenticationTime()
+                
+                // Set up auto-logout timer
+                setupAutoLogoutTimer()
                 getGcpAuthTokenAndLoadImage(account)
             } else {
                 println("DEBUG-AUTH: Account is null despite no ApiException being thrown")
@@ -167,6 +187,23 @@ class MainActivity : FragmentActivity() {
             galleryRepository = GalleryRepository(gcpStorageManager)
             biometricManager = BiometricLoginManager(this)
             
+            // Check if we should skip authentication based on remember login setting
+            if (shouldSkipAuthentication()) {
+                println("$TAG: Skipping authentication due to remember login setting")
+                // Try to get last signed in account
+                val lastSignedInAccount = GoogleSignIn.getLastSignedInAccount(this)
+                if (lastSignedInAccount != null) {
+                    // Auto-authenticate with last account
+                    statusMessage.value = "Auto-signing in using remembered credentials..."
+                    authenticatedAccount.value = lastSignedInAccount
+                    isAuthenticated.value = true
+                    showGallery.value = true
+                    
+                    // Setup auto-logout timer
+                    setupAutoLogoutTimer()
+                }
+            }
+            
             // Setup biometric authentication
             biometricManager.setupBiometricAuth(object : BiometricLoginManager.BiometricAuthListener {
                 override fun onAuthenticationSucceeded() {
@@ -180,16 +217,43 @@ class MainActivity : FragmentActivity() {
                 }
     
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    statusMessage.value = "Authentication error: $errString"
-                    Toast.makeText(this@MainActivity, "Authentication error: $errString", Toast.LENGTH_SHORT).show()
+                    Log.d(TAG, "Authentication error: $errString (code: $errorCode)")
+                    
+                    when (errorCode) {
+                        // Handle too many failed attempts
+                        BiometricPrompt.ERROR_LOCKOUT, BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> {
+                            statusMessage.value = "Too many failed attempts"
+                            Toast.makeText(this@MainActivity, 
+                                "Too many attempts. Use your PIN or password to continue.", 
+                                Toast.LENGTH_LONG).show()
+                            
+                            // Show device credential prompt as fallback
+                            biometricManager.showDeviceCredentialPrompt(
+                                "Sign in to Photo Gallery",
+                                "Too many failed biometric attempts. Please use your PIN or password."
+                            )
+                        }
+                        
+                        // Handle other errors
+                        else -> {
+                            statusMessage.value = "Authentication error: $errString"
+                            Toast.makeText(this@MainActivity, 
+                                "Authentication error: $errString", 
+                                Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             })
         } else {
             println("$TAG: Activity recreated but managers are already initialized")
         }
 
+        // Force dark mode in the system UI
+        window.statusBarColor = android.graphics.Color.parseColor("#121212") // DarkBackground
+        window.navigationBarColor = android.graphics.Color.parseColor("#121212") // DarkBackground
+        
         setContent {
-            MaterialTheme {
+            SchmucklemierPhotosTheme(darkTheme = true, dynamicColor = false) {
                 // Keep system window decorations to show app bar
                 androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
                 
@@ -282,30 +346,25 @@ class MainActivity : FragmentActivity() {
                                         galleryViewModel.getMediaUrl(account, BUCKET_NAME, video.path)
                                     },
                                     onNavigateToDocument = { /* Handle document files */ },
+                                    onNavigateToSettings = {
+                                        // Navigate to settings fragment
+                                        navigateToSettings()
+                                    },
                                     onLogout = {
-                                        // Clear authentication state and reset view
-                                        authenticatedAccount.value = null
-                                        isAuthenticated.value = false
-                                        showGallery.value = false
-                                        galleryViewModel.clearNavigationHistory()
-                                        // Sign out from Google
-                                        val googleSignInClient = GoogleSignIn.getClient(
-                                            this, 
-                                            GoogleSignInOptions.DEFAULT_SIGN_IN
-                                        )
-                                        googleSignInClient.signOut()
-                                        statusMessage.value = "Logged out. Press the button to authenticate."
+                                        performLogout()
+                                        
+                                        // Clear remembered login by clearing the last authentication time
+                                        val sharedPrefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                                        sharedPrefs.edit().remove(PREF_LAST_AUTH_TIME).apply()
                                     }
                                 )
                             }
                         }
                     } else {
-                        // Show authentication screen
-                        PhotoViewerScreen(
+                        // Show login screen
+                        LoginScreen(
                             statusMessage = statusMessage.value,
-                            imageUrl = imageUrl.value,
-                            imageLoader = imageLoader,
-                            onAuthButtonClick = { startAuthentication() }
+                            onBiometricLoginClick = { startAuthentication() }
                         )
                     }
                 }
@@ -315,27 +374,56 @@ class MainActivity : FragmentActivity() {
 
     /**
      * Start the authentication flow
-     * First try biometric authentication, fallback to direct Google Sign-In if not available
+     * Tries device authentication (biometric or PIN), and continues to Google Sign-In on success
      */
     private fun startAuthentication() {
-        statusMessage.value = "Starting authentication..."
-        
         // Check if we're already authenticated (e.g., after a configuration change)
         if (isAuthenticated.value && authenticatedAccount.value != null) {
             println("$TAG: Already authenticated, skipping authentication flow")
             return
         }
         
-        // Check if we can use biometrics, otherwise go straight to Google Sign-In
-        biometricManager.checkBiometricCapabilityAndAuthenticate(
-            onUnavailable = {
-                statusMessage.value = "Biometric auth unavailable. Starting Google Sign-In..."
+        // Check what authentication methods are available
+        val authType = biometricManager.getAvailableAuthType()
+        
+        when (authType) {
+            BiometricLoginManager.AuthType.BIOMETRIC -> {
+                statusMessage.value = "Starting biometric authentication..."
+                
+                // Use biometric authentication
+                biometricManager.checkBiometricCapabilityAndAuthenticate(
+                    onUnavailable = {
+                        statusMessage.value = "Biometric authentication is not available. Please set up device security."
+                        Toast.makeText(this, "Authentication not available on this device", Toast.LENGTH_SHORT).show()
+                    },
+                    promptTitle = "Sign in to Photo Gallery",
+                    promptSubtitle = "Use biometrics to access your photos",
+                    negativeButtonText = "Cancel"
+                )
+            }
+            
+            BiometricLoginManager.AuthType.DEVICE_CREDENTIAL -> {
+                statusMessage.value = "Starting device authentication..."
+                
+                // Use device PIN/pattern/password authentication
+                biometricManager.checkBiometricCapabilityAndAuthenticate(
+                    onUnavailable = {
+                        statusMessage.value = "Device authentication is not available. Please set up device security."
+                        Toast.makeText(this, "Authentication not available on this device", Toast.LENGTH_SHORT).show()
+                    },
+                    promptTitle = "Sign in to Photo Gallery",
+                    promptSubtitle = "Use your PIN or password to access your photos",
+                    negativeButtonText = "Cancel"
+                )
+            }
+            
+            BiometricLoginManager.AuthType.NONE -> {
+                // No device authentication available, go straight to Google Sign-In
+                statusMessage.value = "Device security not set up. Starting Google Sign-In..."
+                Toast.makeText(this, "No device security found. Using Google authentication.", Toast.LENGTH_SHORT).show()
                 startGoogleSignIn()
-            },
-            promptTitle = "Authenticate",
-            promptSubtitle = "Use your fingerprint to access the image",
-            negativeButtonText = "Cancel"
-        )
+            }
+        }
     }
     
     /**
@@ -347,11 +435,179 @@ class MainActivity : FragmentActivity() {
     }
     
     /**
+     * Handle app closing, check if we need to clear cache
+     */
+    override fun onDestroy() {
+        super.onDestroy()
+        println("$TAG: onDestroy called, checking if cache should be cleared")
+        
+        // Cancel any pending auto-logout
+        cancelAutoLogoutTimer()
+        
+        // If authenticated, save the current time for remember login feature
+        if (isAuthenticated.value && authenticatedAccount.value != null) {
+            saveLastAuthenticationTime()
+        }
+        
+        // Check settings to see if we should clear cache
+        val settingsManager = SettingsManager.getInstance(this)
+        if (settingsManager.settings.value.autoClearCache) {
+            println("$TAG: Auto-clearing cache on app exit")
+            // Use a coroutine scope that won't be cancelled when activity is destroyed
+            kotlinx.coroutines.MainScope().launch {
+                try {
+                    // Clear the image cache
+                    val fileCache = com.example.schmucklemierphotos.cache.FileCache(this@MainActivity)
+                    fileCache.clearCache()
+                    println("$TAG: Cache cleared successfully")
+                } catch (e: Exception) {
+                    println("$TAG: Error clearing cache: ${e.message}")
+                }
+            }
+        }
+    }
+    
+    /**
+     * Save the current time for the remember login feature
+     */
+    private fun saveLastAuthenticationTime() {
+        val settingsManager = SettingsManager.getInstance(this)
+        val rememberLoginMinutes = settingsManager.settings.value.rememberLoginMinutes
+        
+        // Only save if remember login is enabled
+        if (rememberLoginMinutes > 0) {
+            val sharedPrefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+            sharedPrefs.edit().putLong(PREF_LAST_AUTH_TIME, System.currentTimeMillis()).apply()
+            println("$TAG: Saved last authentication time for remember login feature")
+        }
+    }
+    
+    /**
+     * Check if we should skip authentication based on remember login setting
+     */
+    private fun shouldSkipAuthentication(): Boolean {
+        val settingsManager = SettingsManager.getInstance(this)
+        val rememberLoginMinutes = settingsManager.settings.value.rememberLoginMinutes
+        
+        // If remember login is disabled, don't skip authentication
+        if (rememberLoginMinutes <= 0) {
+            return false
+        }
+        
+        val sharedPrefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+        val lastAuthTime = sharedPrefs.getLong(PREF_LAST_AUTH_TIME, 0)
+        
+        // If no previous authentication, don't skip
+        if (lastAuthTime == 0L) {
+            return false
+        }
+        
+        // Calculate how much time has passed since last authentication
+        val currentTime = System.currentTimeMillis()
+        val elapsedMinutes = (currentTime - lastAuthTime) / (1000 * 60)
+        
+        // If within the remember login period, skip authentication
+        return elapsedMinutes < rememberLoginMinutes
+    }
+    
+    /**
+     * Setup auto-logout timer based on settings
+     */
+    private fun setupAutoLogoutTimer() {
+        // Cancel any existing timer first
+        cancelAutoLogoutTimer()
+        
+        val settingsManager = SettingsManager.getInstance(this)
+        val autoLogoutMinutes = settingsManager.settings.value.autoLogoutMinutes
+        
+        // Only setup timer if auto logout is enabled
+        if (autoLogoutMinutes > 0) {
+            val autoLogoutMs = autoLogoutMinutes * 60 * 1000L
+            
+            autoLogoutRunnable = Runnable {
+                // Only log out if we're still authenticated
+                if (isAuthenticated.value) {
+                    println("$TAG: Auto logout triggered after $autoLogoutMinutes minutes of inactivity")
+                    performLogout()
+                }
+            }
+            
+            // Schedule the auto logout
+            handler.postDelayed(autoLogoutRunnable!!, autoLogoutMs)
+            println("$TAG: Auto logout scheduled for $autoLogoutMinutes minutes from now")
+        }
+    }
+    
+    /**
+     * Cancel any pending auto-logout timer
+     */
+    private fun cancelAutoLogoutTimer() {
+        autoLogoutRunnable?.let {
+            handler.removeCallbacks(it)
+            println("$TAG: Auto logout timer cancelled")
+        }
+    }
+    
+    /**
+     * Reset the auto-logout timer when there's user activity
+     */
+    private fun resetAutoLogoutTimer() {
+        if (isAuthenticated.value) {
+            cancelAutoLogoutTimer()
+            setupAutoLogoutTimer()
+        }
+    }
+    
+    /**
+     * Perform logout actions
+     */
+    private fun performLogout() {
+        // Clear authentication state and reset view
+        authenticatedAccount.value = null
+        isAuthenticated.value = false
+        showGallery.value = false
+        galleryViewModel.clearNavigationHistory()
+        
+        // Sign out from Google
+        val googleSignInClient = GoogleSignIn.getClient(
+            this,
+            GoogleSignInOptions.DEFAULT_SIGN_IN
+        )
+        googleSignInClient.signOut()
+        
+        // Update UI
+        statusMessage.value = "Logged out. Sign in to access your photos."
+    }
+    
+    /**
+     * Track user interaction events to reset auto-logout timer
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        resetAutoLogoutTimer()
+        return super.dispatchTouchEvent(ev)
+    }
+    
+    /**
      * Handle configuration changes
      */
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         println("$TAG: onConfigurationChanged called, orientation: ${newConfig.orientation}")
+    }
+    
+    /**
+     * Navigate to the settings screen
+     */
+    private fun navigateToSettings() {
+        val settingsFragment = SettingsFragment()
+        supportFragmentManager.beginTransaction().apply {
+            // Hide the current UI
+            setTransition(FragmentTransaction.TRANSIT_FRAGMENT_OPEN)
+            // Add the fragment and add to back stack so we can return
+            add(android.R.id.content, settingsFragment)
+            addToBackStack("settings")
+            commit()
+        }
     }
 
     private fun startGoogleSignIn() {
@@ -394,19 +650,8 @@ class MainActivity : FragmentActivity() {
                     throw Exception("Google account object is null, cannot authenticate with GCP")
                 }
 
-                // Use our GCPAuthenticationManager to get an authenticated URL
-                val authenticatedUrl = gcpAuthManager.getAuthenticatedFileUrl(
-                    account,
-                    BUCKET_NAME,
-                    IMAGE_PATH
-                )
-                
-                println("DEBUG-AUTH: Got authenticated URL: ${authenticatedUrl.take(75)}...")
-
                 withContext(Dispatchers.Main) {
-                    statusMessage.value = "Image loaded successfully!"
-                    imageUrl.value = authenticatedUrl
-                    println("DEBUG-AUTH: Set image URL to use with Coil")
+                    statusMessage.value = "Authentication successful!"
                     
                     // After successful authentication, list the folders in the bucket
                     listBucketFolders(account)
@@ -417,8 +662,8 @@ class MainActivity : FragmentActivity() {
                 e.printStackTrace()
 
                 withContext(Dispatchers.Main) {
-                    statusMessage.value = "Error loading image: ${e.message}"
-                    Toast.makeText(this@MainActivity, "Failed to fetch image: ${e.message}",
+                    statusMessage.value = "Error during authentication: ${e.message}"
+                    Toast.makeText(this@MainActivity, "Authentication failed: ${e.message}",
                         Toast.LENGTH_LONG).show()
                 }
             }
@@ -449,7 +694,7 @@ class MainActivity : FragmentActivity() {
                     }
                     
                     // Update status message to show folder count
-                    statusMessage.value = "Image loaded successfully! Found ${folders.size} folders."
+                    statusMessage.value = "Authentication successful! Loading gallery..."
                 }
                 
             } catch (e: Exception) {
@@ -469,68 +714,58 @@ class MainActivity : FragmentActivity() {
 }
 
 @Composable
-fun PhotoViewerScreen(
+fun LoginScreen(
     statusMessage: String,
-    imageUrl: String?,
-    imageLoader: ImageLoader,
-    onAuthButtonClick: () -> Unit
+    onBiometricLoginClick: () -> Unit
 ) {
-    var currentImageUrl by remember { mutableStateOf<String?>(null) }
+    // Remember authentication availability state for UI display
     val context = LocalContext.current
-
-    LaunchedEffect(imageUrl) {
-        currentImageUrl = imageUrl
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Top
+    val authManager = remember { BiometricLoginManager(context as FragmentActivity) }
+    val authType = remember { authManager.getAvailableAuthType() }
+    
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-        Text(
-            text = statusMessage,
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(vertical = 16.dp)
-        )
-
-        Button(
-            onClick = onAuthButtonClick,
-            modifier = Modifier.padding(vertical = 8.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("Authenticate & Load Image")
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        currentImageUrl?.let { url ->
-            println("DEBUG-AUTH: Displaying image from URL: ${url.take(75)}...")
+            // App title
+            Text(
+                text = "Photo Gallery",
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 48.dp)
+            )
             
-            // Create a custom request with our authenticated URL
-            val request = ImageRequest.Builder(context)
-                .data(url)
-                .crossfade(true)
-                .build()
-            
-            // Display the image using our configured loader
-            AsyncImage(
-                model = request,
-                contentDescription = "GCP Bucket Image",
-                imageLoader = imageLoader,
+            // Status message
+            Text(
+                text = statusMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 48.dp)
+            )
+
+            // Sign in button - text changes based on what authentication method is available
+            Button(
+                onClick = onBiometricLoginClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                contentScale = ContentScale.FillWidth,
-                onSuccess = { 
-                    println("DEBUG-AUTH: Image loaded successfully")
-                },
-                onError = { 
-                    println("DEBUG-AUTH: Failed to load image: ${it.result.throwable}")
-                    it.result.throwable.printStackTrace()
+                    .padding(vertical = 8.dp)
+            ) {
+                val buttonText = when (authType) {
+                    BiometricLoginManager.AuthType.BIOMETRIC -> "Sign in with Biometrics"
+                    BiometricLoginManager.AuthType.DEVICE_CREDENTIAL -> "Sign in with PIN/Password"
+                    BiometricLoginManager.AuthType.NONE -> "Sign in with Google"
                 }
-            )
+                Text(buttonText)
+            }
         }
     }
 }

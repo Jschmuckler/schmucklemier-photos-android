@@ -31,6 +31,9 @@ class GalleryViewModel(
     private val repository: GalleryRepository
 ) : ViewModel() {
 
+    // Settings manager for app settings
+    private val settingsManager = com.example.schmucklemierphotos.ui.settings.SettingsManager.getInstance(context)
+    
     // File cache for caching files locally
     private val fileCache = FileCache(context)
     
@@ -124,6 +127,38 @@ class GalleryViewModel(
                     return@launch
                 }
                 
+                // Check if low bandwidth mode is active
+                if (settingsManager.settings.value.lowBandwidthMode) {
+                    // In low bandwidth mode, use the thumbnail instead of the full image
+                    val thumbnailPath = ThumbnailUtils.generateThumbnailPath(filePath)
+                    
+                    // Check if we have the thumbnail cached locally
+                    val cachedThumbnail = fileCache.getFile(thumbnailPath)
+                    if (cachedThumbnail != null) {
+                        // Use the cached thumbnail URI
+                        val fileUri = "file://${cachedThumbnail.absolutePath}"
+                        _mediaUrls.value = _mediaUrls.value + (filePath to fileUri)
+                        return@launch
+                    }
+                    
+                    try {
+                        // Try to get thumbnail URL first
+                        val thumbnailUrl = repository.getImageUrl(account, bucketName, thumbnailPath)
+                        
+                        // Store the thumbnail URL in our map
+                        _mediaUrls.value = _mediaUrls.value + (filePath to thumbnailUrl)
+                        
+                        // Download and cache the thumbnail in the background
+                        cacheFileFromUrl(account, bucketName, thumbnailPath)
+                        return@launch
+                    } catch (e: Exception) {
+                        // If thumbnail doesn't exist, fall back to the full image
+                        Log.d("GalleryViewModel", "No thumbnail available for $filePath in low bandwidth mode, falling back to full image")
+                    }
+                }
+                
+                // Normal path for full-quality images or when thumbnail isn't available
+                
                 // Check if we have the file cached locally
                 val cachedFile = fileCache.getFile(filePath)
                 if (cachedFile != null) {
@@ -142,7 +177,7 @@ class GalleryViewModel(
                 // Download and cache the file in the background
                 cacheFileFromUrl(account, bucketName, filePath)
             } catch (e: Exception) {
-                // Handle error
+                Log.e("GalleryViewModel", "Error getting media URL for $filePath: ${e.message}")
             }
         }
     }
@@ -193,10 +228,22 @@ class GalleryViewModel(
      * @param account The authenticated Google account
      * @param bucketName The GCS bucket name
      * @param originalPath The path to the original file
+     * @param forceLoad Force loading even in extreme low bandwidth mode
      */
-    fun getThumbnailUrl(account: GoogleSignInAccount, bucketName: String, originalPath: String) {
+    fun getThumbnailUrl(
+        account: GoogleSignInAccount, 
+        bucketName: String, 
+        originalPath: String,
+        forceLoad: Boolean = false
+    ) {
         viewModelScope.launch {
             try {
+                // Check if extreme low bandwidth mode is active and we're not forcing load
+                if (settingsManager.settings.value.extremeLowBandwidthMode && !forceLoad) {
+                    // Skip loading thumbnails while scrolling in extreme low bandwidth mode
+                    return@launch
+                }
+                
                 // Generate the thumbnail path
                 val thumbnailPath = ThumbnailUtils.generateThumbnailPath(originalPath)
                 
@@ -226,9 +273,11 @@ class GalleryViewModel(
                 } catch (e: Exception) {
                     // If thumbnail doesn't exist, just don't add any URL
                     // The UI will show a fallback icon
+                    Log.w("GalleryViewModel", "No thumbnail available for $originalPath: ${e.message}")
                 }
             } catch (e: Exception) {
                 // Handle error silently for thumbnails
+                Log.e("GalleryViewModel", "Error getting thumbnail URL for $originalPath: ${e.message}")
             }
         }
     }

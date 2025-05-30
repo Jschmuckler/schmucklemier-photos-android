@@ -20,7 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -42,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
@@ -70,6 +71,7 @@ fun GalleryScreen(
     onNavigateToImage: (GalleryItem.ImageFile) -> Unit,
     onNavigateToVideo: (GalleryItem.VideoFile) -> Unit,
     onNavigateToDocument: (GalleryItem.DocumentFile) -> Unit,
+    onNavigateToSettings: () -> Unit,
     onLogout: () -> Unit
 ) {
     // Provide CompositionLocal values for child components
@@ -134,16 +136,6 @@ fun GalleryScreen(
                     }
                 },
                 actions = {
-                    // Refresh button
-                    IconButton(onClick = {
-                        galleryRepository.refreshCurrentPath()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh"
-                        )
-                    }
-                    
                     // Menu button with logout option
                     IconButton(onClick = { showMenu = true }) {
                         Icon(
@@ -157,6 +149,22 @@ fun GalleryScreen(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        // Settings option
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = {
+                                showMenu = false
+                                onNavigateToSettings()
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = null
+                                )
+                            }
+                        )
+                        
+                        // Logout option
                         DropdownMenuItem(
                             text = { Text("Logout") },
                             onClick = {
@@ -312,21 +320,37 @@ private fun GalleryGrid(
     val bucketName = LocalBucketName.current
     val thumbnailUrls by galleryViewModel.thumbnailUrls.collectAsState()
     
+    // Get settings
+    val settingsManager = com.example.schmucklemierphotos.ui.settings.SettingsManager.getInstance(
+        LocalContext.current
+    )
+    val settings by settingsManager.settings.collectAsState()
+    
+    // Determine card size based on settings
+    val cardSize = when (settings.galleryCardSize) {
+        "small" -> 120.dp
+        "medium" -> 160.dp
+        "large" -> 200.dp
+        else -> 160.dp // Default to medium
+    }
+    
     LazyVerticalGrid(
         state = gridState,
-        columns = GridCells.Adaptive(minSize = 160.dp), // Adaptive layout for different screen sizes
+        columns = GridCells.Adaptive(minSize = cardSize), // Adaptive layout based on settings
         contentPadding = PaddingValues(4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = Modifier.fillMaxSize()
     ) {
         items(items) { item ->
-            // Request thumbnail URL for media items
-            LaunchedEffect(item) {
+            // Request thumbnail URL for media items based on settings
+            LaunchedEffect(item, settings.extremeLowBandwidthMode) {
                 when (item) {
                     is GalleryItem.ImageFile, is GalleryItem.VideoFile -> {
-                        // Request thumbnail URL to be loaded
-                        galleryViewModel.getThumbnailUrl(account, bucketName, item.path)
+                        // Only request thumbnail if not in extreme low bandwidth mode
+                        // Force load means we'll load it anyway when user stops scrolling
+                        val forceLoad = false
+                        galleryViewModel.getThumbnailUrl(account, bucketName, item.path, forceLoad)
                     }
                     else -> { /* No thumbnail needed */ }
                 }
@@ -339,6 +363,7 @@ private fun GalleryGrid(
                 item = item,
                 imageLoader = imageLoader,
                 thumbnailUrl = thumbnailUrl,
+                showFilenames = settings.showFilenames,
                 onClick = {
                     when (item) {
                         is GalleryItem.Folder -> onFolderClick(item)

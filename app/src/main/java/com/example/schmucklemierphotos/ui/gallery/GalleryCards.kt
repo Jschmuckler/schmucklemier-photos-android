@@ -74,14 +74,20 @@ fun GalleryCard(
     item: GalleryItem,
     imageLoader: ImageLoader? = null,
     thumbnailUrl: String? = null,
+    showFilenames: Boolean = true,
     onClick: () -> Unit
 ) {
     when (item) {
-        is GalleryItem.Folder -> FolderCard(folder = item, onClick = onClick)
+        is GalleryItem.Folder -> FolderCard(
+            folder = item, 
+            showFilename = true,  // Always show folder names
+            onClick = onClick
+        )
         is GalleryItem.ImageFile -> ImageCard(
             image = item, 
             imageLoader = imageLoader, 
             thumbnailUrl = thumbnailUrl,
+            showFilename = showFilenames,  // Respect setting for images with thumbnails
             onClick = onClick
         )
         is GalleryItem.VideoFile -> FileCard(
@@ -90,18 +96,21 @@ fun GalleryCard(
             iconTint = Color(0xFF5C6BC0),
             imageLoader = imageLoader,
             thumbnailUrl = thumbnailUrl,
+            showFilename = showFilenames,  // Respect setting for videos with thumbnails
             onClick = onClick
         )
         is GalleryItem.DocumentFile -> FileCard(
             file = item,
             icon = Icons.Default.PictureAsPdf,
             iconTint = Color(0xFFEF5350),
+            showFilename = true,  // Always show names for documents
             onClick = onClick
         )
         is GalleryItem.OtherFile -> FileCard(
             file = item,
             icon = Icons.Default.InsertDriveFile,
             iconTint = Color(0xFF78909C),
+            showFilename = true,  // Always show names for other files
             onClick = onClick
         )
     }
@@ -111,7 +120,7 @@ fun GalleryCard(
  * Card component for displaying a folder
  */
 @Composable
-fun FolderCard(folder: GalleryItem.Folder, onClick: () -> Unit) {
+fun FolderCard(folder: GalleryItem.Folder, showFilename: Boolean = true, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -134,17 +143,20 @@ fun FolderCard(folder: GalleryItem.Folder, onClick: () -> Unit) {
                 )
             }
             
-            Text(
-                text = folder.getDisplayName(),
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp)
-            )
+            // Only show the filename if showFilename is true
+            if (showFilename) {
+                Text(
+                    text = folder.getDisplayName(),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                )
+            }
         }
     }
 }
@@ -157,6 +169,7 @@ fun ImageCard(
     image: GalleryItem.ImageFile, 
     imageLoader: ImageLoader?, 
     thumbnailUrl: String? = null,
+    showFilename: Boolean = true,
     onClick: () -> Unit
 ) {
     var isLoading by remember { mutableStateOf(true) }
@@ -231,16 +244,21 @@ fun ImageCard(
                 }
             }
             
-            Text(
-                text = image.getDisplayName(),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp)
-            )
+            // Always show filename for images without thumbnails, otherwise respect setting
+            val shouldShowFilename = showFilename || thumbnailUrl == null || hasError
+            
+            if (shouldShowFilename) {
+                Text(
+                    text = image.getDisplayName(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
+                )
+            }
         }
     }
 }
@@ -255,6 +273,7 @@ fun FileCard(
     iconTint: Color,
     imageLoader: ImageLoader? = null,
     thumbnailUrl: String? = null,
+    showFilename: Boolean = true,
     onClick: () -> Unit
 ) {
     Card(
@@ -341,16 +360,26 @@ fun FileCard(
                 }
             }
             
-            Text(
-                text = file.getDisplayName(),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp)
-            )
+            // For video files with thumbnails, respect the setting
+            // For all other files or videos without thumbnails, always show name
+            val isVideoWithThumbnail = file is GalleryItem.VideoFile && 
+                                      thumbnailUrl != null && 
+                                      imageLoader != null
+            
+            val shouldShowFilename = showFilename || !isVideoWithThumbnail
+            
+            if (shouldShowFilename) {
+                Text(
+                    text = file.getDisplayName(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
+                )
+            }
         }
     }
 }

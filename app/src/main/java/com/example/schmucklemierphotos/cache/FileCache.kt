@@ -15,13 +15,23 @@ import java.util.concurrent.TimeUnit
  */
 class FileCache(
     private val context: Context,
-    private val maxSizeBytes: Long = DEFAULT_MAX_SIZE_BYTES
+    maxSizeMb: Int? = null
 ) {
     companion object {
         private const val TAG = "FileCache"
         private const val CACHE_DIR_NAME = "gcp_file_cache"
-        private const val DEFAULT_MAX_SIZE_BYTES = 1L * 1024 * 1024 * 1024 // 1GB default
+        private const val DEFAULT_MAX_SIZE_MB = 500 // 500MB default
         private const val METADATA_EXTENSION = ".meta"
+        
+        // Convert max size from MB to bytes
+        private fun mbToBytes(mb: Int): Long = mb.toLong() * 1024 * 1024
+    }
+    
+    // Get max size from settings or use default
+    private val maxSizeBytes: Long by lazy {
+        val settingsManager = com.example.schmucklemierphotos.ui.settings.SettingsManager.getInstance(context)
+        val sizeMb = maxSizeMb ?: settingsManager.settings.value.cacheSizeMb
+        mbToBytes(sizeMb)
     }
 
     private val cacheDir: File by lazy {
