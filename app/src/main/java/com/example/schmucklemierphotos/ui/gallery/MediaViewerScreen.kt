@@ -65,8 +65,8 @@ fun MediaViewerScreen(
     onPreCacheThumbnails: (GoogleSignInAccount, String, Int) -> Unit,
     onClose: () -> Unit
 ) {
-    // Whether to show controls
-    var showControls by remember { mutableStateOf(true) }
+    // No top controls to show anymore, but keep the variable for other UI interactions
+    var showControls by remember { mutableStateOf(false) }
     
     // Coroutine scope for launching effects
     val coroutineScope = rememberCoroutineScope()
@@ -113,14 +113,19 @@ fun MediaViewerScreen(
     val dragGestureKey = remember { Any() }
     val transformGestureKey = remember { Any() }
     
-    // Reset zoom when navigating to a different image
-    LaunchedEffect(currentPageIndex) {
+    // Reset zoom when navigating to a different item and force recomposition
+    val key = "media_${currentPageIndex}_${previewableItems.getOrNull(currentPageIndex)?.path}"
+    LaunchedEffect(key) {
+        // Reset zoom and pan for new item
         scale = 1f
         offsetX = 0f
         offsetY = 0f
         
         // Pre-cache thumbnails for surrounding items (pre-cache 2 in each direction)
         onPreCacheThumbnails(account, bucketName, 2)
+        
+        // Log navigation to help with debugging
+        Log.d(TAG, "Navigated to item $currentPageIndex: ${previewableItems.getOrNull(currentPageIndex)?.path}")
     }
     
     DisposableEffect(Unit) {
@@ -133,35 +138,13 @@ fun MediaViewerScreen(
     // Calculate current item for title display
     val currentItem = previewableItems.getOrNull(currentPageIndex) ?: return
     
-    Scaffold(
-        topBar = {
-            if (showControls) {
-                TopAppBar(
-                    title = { Text(currentItem.getDisplayName()) },
-                    navigationIcon = {
-                        IconButton(onClick = onClose) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowBack,
-                                contentDescription = "Back"
-                            )
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onClose) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close"
-                            )
-                        }
-                    }
-                )
-            }
-        }
-    ) { paddingValues ->
+    // Use a simple Box instead of Scaffold to remove the app bar completely
+    Box(
+        modifier = Modifier.fillMaxSize()
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
                 .background(Color.Black)
                 // Simple gesture handling with just two essential features:
                 // 1. Two-finger pinch to zoom with pan
@@ -291,6 +274,10 @@ fun MediaViewerScreen(
             val currentMediaItem = previewableItems.getOrNull(currentPageIndex) ?: previewableItems.first()
             val mediaUrl = mediaUrls[currentMediaItem.path]
             
+            // Use a key to force recomposition when switching between items
+            // This is crucial for videos to properly reset the player
+            val mediaKey = "media_${currentPageIndex}_${currentMediaItem.path}"
+            
             // Just render the current item directly - we handle swipes with gesture detection
             when (currentMediaItem) {
                 is GalleryItem.ImageFile -> {
@@ -308,10 +295,14 @@ fun MediaViewerScreen(
                 }
                 is GalleryItem.VideoFile -> {
                     Log.d(TAG, "Rendering VideoContent for ${currentMediaItem.path}")
-                    VideoContent(
-                        video = currentMediaItem,
-                        videoUrl = mediaUrl
-                    )
+                    // Force recomposition with key parameter to create a new player instance each time
+                    androidx.compose.runtime.key(mediaKey) {
+                        VideoContent(
+                            video = currentMediaItem,
+                            videoUrl = mediaUrl,
+                            onToggleControls = { showControls = !showControls }
+                        )
+                    }
                 }
                 else -> {
                     Log.d(TAG, "Item not previewable: ${currentMediaItem.path}")

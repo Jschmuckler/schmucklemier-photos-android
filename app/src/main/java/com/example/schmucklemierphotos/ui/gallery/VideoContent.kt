@@ -1,6 +1,9 @@
 package com.example.schmucklemierphotos.ui.gallery
 
 import android.net.Uri
+import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
@@ -27,18 +30,76 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.ui.PlayerView
 import com.example.schmucklemierphotos.model.GalleryItem
+import com.example.schmucklemierphotos.utils.ThumbnailUtils
 import kotlinx.coroutines.delay
 
 /**
  * Video content with ExoPlayer using streaming to prevent OOM errors
+ * Modified to support swipe gestures from parent containers and handle various video formats
  */
+
+/**
+ * Helper function to determine video format information based on file extension and MIME type
+ * @param videoUrl The URL of the video
+ * @param existingMimeType Any existing MIME type information from the file metadata
+ * @return Pair of (explicit MIME type to set, preferred MIME type for track selection)
+ */
+private fun getVideoFormatInfo(videoUrl: String?, existingMimeType: String?): Pair<String?, String?> {
+    // First check if we have a valid URL
+    if (videoUrl == null) return Pair(null, null)
+    
+    // Determine format from URL extension and existing MIME type
+    return when {
+        // MPEG-TS formats
+        videoUrl.endsWith(".ts", ignoreCase = true) || 
+        videoUrl.contains(".ts?", ignoreCase = true) ||
+        videoUrl.endsWith(".m2ts", ignoreCase = true) ||
+        videoUrl.endsWith(".mts", ignoreCase = true) ||
+        existingMimeType?.contains("video/mp2t", ignoreCase = true) == true -> {
+            Pair("video/mp2t", "video/mp2t")
+        }
+        
+        // WebP video (animated WebP)
+        videoUrl.endsWith(".webp", ignoreCase = true) ||
+        existingMimeType?.contains("image/webp", ignoreCase = true) == true -> {
+            Pair("image/webp", null) // No preferred track type for WebP
+        }
+        
+        // MP4 formats
+        videoUrl.endsWith(".mp4", ignoreCase = true) ||
+        existingMimeType?.contains("video/mp4", ignoreCase = true) == true -> {
+            Pair(null, "video/avc") // Prefer H.264/AVC for MP4
+        }
+        
+        // WebM formats
+        videoUrl.endsWith(".webm", ignoreCase = true) ||
+        existingMimeType?.contains("video/webm", ignoreCase = true) == true -> {
+            Pair(null, "video/vp9") // Prefer VP9 for WebM
+        }
+        
+        // MOV formats
+        videoUrl.endsWith(".mov", ignoreCase = true) ||
+        existingMimeType?.contains("video/quicktime", ignoreCase = true) == true -> {
+            Pair("video/quicktime", "video/avc") // Prefer H.264 for QuickTime
+        }
+        
+        // For all other formats, use ThumbnailUtils to determine MIME type or fallback to null
+        else -> {
+            val mimeType = ThumbnailUtils.getMimeTypeFromPath(videoUrl)
+            Pair(mimeType, null)
+        }
+    }
+}
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoContent(
     video: GalleryItem.VideoFile,
-    videoUrl: String?
+    videoUrl: String?,
+    onToggleControls: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var isLoading by remember { mutableStateOf(true) }
@@ -97,6 +158,7 @@ fun VideoContent(
         }
     }
     
+    // Use a simpler box without any gesture handling to let parent handle gestures
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -122,23 +184,64 @@ fun VideoContent(
         // Player view
         if (videoUrl != null) {
             val player = remember {
+                // Determine video format for player configuration
+                val (mimeType, _) = getVideoFormatInfo(videoUrl, video.mimeType)
+                val isMpegTs = mimeType == "video/mp2t"
+                
+                // Configure the ExoPlayer with format-specific settings
                 ExoPlayer.Builder(context)
+                    // Configure for specialized format support
+                    .setMediaSourceFactory(
+                        DefaultMediaSourceFactory(context).apply {
+                            // Use streaming-optimized settings for MPEG-TS
+                            if (isMpegTs) {
+                                setLiveTargetOffsetMs(5000)
+                            }
+                        }
+                    )
                     .setLoadControl(
                         androidx.media3.exoplayer.DefaultLoadControl.Builder()
-                            // Use smaller buffer sizes to reduce memory usage
+                            // Adjust buffer sizes based on format
                             .setBufferDurationsMs(
-                                10000,   // Min buffer ms
-                                30000,   // Max buffer ms (reduced from default)
+                                if (isMpegTs) 5000 else 10000,   // Min buffer ms (smaller for TS)
+                                if (isMpegTs) 15000 else 30000,  // Max buffer ms (smaller for TS)
                                 1000,    // Buffer for playback ms
                                 2000     // Buffer for rebuffering ms
                             )
-                            // Limit the size of memory allocation for video decoding
+                            // Prioritize memory efficiency for all formats
                             .setPrioritizeTimeOverSizeThresholds(true)
+                            // Set smaller back buffer for MPEG-TS to reduce memory usage
+                            .setBackBuffer(if (isMpegTs) 5000 else 30000, false)
                             .build()
                     )
                     .build().apply {
-                        // Set error handling to be more robust
-                        setMediaItem(MediaItem.fromUri(Uri.parse(videoUrl)))
+                        // Determine video format and set appropriate MIME type
+                        val (mimeType, preferredMimeType) = getVideoFormatInfo(videoUrl, video.mimeType)
+                        
+                        // Create the appropriate media item with explicit format info when needed
+                        val mediaItem = if (mimeType != null) {
+                            // For specialized formats, use explicit configuration
+                            MediaItem.Builder()
+                                .setUri(Uri.parse(videoUrl))
+                                .setMimeType(mimeType)
+                                .build()
+                        } else {
+                            // For standard formats, use default configuration
+                            MediaItem.fromUri(Uri.parse(videoUrl))
+                        }
+                        
+                        // Set preferred video format for track selection if available
+                        if (preferredMimeType != null) {
+                            setTrackSelectionParameters(
+                                trackSelectionParameters.buildUpon()
+                                    .setPreferredVideoMimeType(preferredMimeType)
+                                    .build()
+                            )
+                        }
+                        
+                        // Set the configured media item
+                        setMediaItem(mediaItem)
+                        
                         // Set minimal video surface when preparing to reduce memory usage
                         setVideoScalingMode(androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT)
                         prepare()
@@ -171,11 +274,18 @@ fun VideoContent(
                     }
             }
             
-            // Clean up resources when leaving the screen
+            // Standard cleanup for all video formats
             DisposableEffect(videoUrl) {
                 onDispose {
-                    player.clearVideoSurface() // Clear surface before release
-                    player.release()
+                    try {
+                        // Consistent cleanup process for all video formats
+                        player.stop()
+                        player.clearVideoSurface()
+                        player.clearMediaItems()
+                        player.release()
+                    } catch (e: Exception) {
+                        Log.e("VideoContent", "Error releasing player: ${e.message}")
+                    }
                 }
             }
             
@@ -186,6 +296,23 @@ fun VideoContent(
                         layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
                         useController = true
                         setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                        
+                        // Make sure we don't intercept swipe gestures
+                        controllerHideOnTouch = true
+                        
+                        // Set up tap detection to toggle controls
+                        setOnClickListener {
+                            onToggleControls()
+                        }
+                        
+                        // CRITICAL: Don't intercept swipe events
+                        // This allows parent gesture detectors to handle horizontal swipes
+                        // while still allowing the player to handle tap events
+                        setOnTouchListener { _, event -> 
+                            // Only handle click events, let swipes pass through
+                            // Return false to allow parent swipe handlers to work
+                            false
+                        }
                         
                         // Use more memory-efficient surface type
                         setResizeMode(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT)

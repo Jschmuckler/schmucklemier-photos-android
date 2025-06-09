@@ -24,7 +24,7 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
             ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"
         )
         private val VIDEO_EXTENSIONS = listOf(
-            ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm"
+            ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm", ".ts", ".m2ts", ".mts"
         )
         private val DOCUMENT_EXTENSIONS = listOf(
             ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt"

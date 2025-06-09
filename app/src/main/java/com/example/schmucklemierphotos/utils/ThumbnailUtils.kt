@@ -69,6 +69,9 @@ object ThumbnailUtils {
             filePath.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
             filePath.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
             filePath.endsWith(".webm", ignoreCase = true) -> "video/webm"
+            filePath.endsWith(".ts", ignoreCase = true) -> "video/mp2t"
+            filePath.endsWith(".m2ts", ignoreCase = true) -> "video/mp2t"
+            filePath.endsWith(".mts", ignoreCase = true) -> "video/mp2t"
             else -> null
         }
     }
