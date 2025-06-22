@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.api.services.storage.Storage
+import com.google.api.services.storage.model.Objects
 import com.google.api.services.storage.model.StorageObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -253,5 +254,64 @@ class GCPStorageManager(
         objectPath: String
     ): String {
         return authManager.getAuthenticatedFileUrl(account, bucketName, objectPath)
+    }
+    
+    /**
+     * Gets metadata about a file in Google Cloud Storage
+     * @param account The Google Sign-In account to use for authentication
+     * @param bucketName The name of the GCS bucket
+     * @param objectPath The path to the object within the bucket
+     * @return StorageObject containing metadata about the file
+     */
+    suspend fun getFileMetadata(
+        account: GoogleSignInAccount,
+        bucketName: String,
+        objectPath: String
+    ): StorageObject = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Getting metadata for $bucketName/$objectPath")
+            
+            // Create a storage service client
+            val storage = authManager.createStorageService(account)
+            
+            // Get the object metadata
+            val metadata = storage.objects().get(bucketName, objectPath).execute()
+            
+            Log.d(TAG, "File size for $objectPath: ${metadata.size} bytes")
+            return@withContext metadata
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file metadata: ${e.message}", e)
+            throw e
+        }
+    }
+    
+    /**
+     * Checks if a file exceeds a specified size threshold
+     * @param account The Google Sign-In account to use for authentication
+     * @param bucketName The name of the GCS bucket
+     * @param objectPath The path to the object within the bucket
+     * @param thresholdBytes Size threshold in bytes
+     * @return True if the file is larger than the threshold, false otherwise
+     */
+    suspend fun isFileLargerThan(
+        account: GoogleSignInAccount,
+        bucketName: String,
+        objectPath: String,
+        thresholdBytes: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // Get file metadata
+            val metadata = getFileMetadata(account, bucketName, objectPath)
+            val fileSize = metadata.size
+            
+            Log.d(TAG, "File size check for $objectPath: $fileSize bytes vs threshold $thresholdBytes bytes")
+            return@withContext fileSize > thresholdBytes
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking file size: ${e.message}", e)
+            // If we can't determine the size, assume it's not large
+            return@withContext false
+        }
     }
 }

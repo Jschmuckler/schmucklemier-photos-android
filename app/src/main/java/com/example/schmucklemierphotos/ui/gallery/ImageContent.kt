@@ -44,7 +44,6 @@ fun ImageContent(
     scale: Float = 1f,
     offsetX: Float = 0f,
     offsetY: Float = 0f,
-    onToggleControls: () -> Unit
 ) {
     // Debug constants
     val TAG = "ImageContent"
@@ -72,12 +71,7 @@ fun ImageContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { onToggleControls() }
-                )
-            },
+            .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
         val context = LocalContext.current

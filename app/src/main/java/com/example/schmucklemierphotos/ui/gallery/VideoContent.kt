@@ -302,7 +302,7 @@ fun VideoContent(
                         
                         // Set up tap detection to toggle controls
                         setOnClickListener {
-                            onToggleControls()
+                             onToggleControls()
                         }
                         
                         // CRITICAL: Don't intercept swipe events

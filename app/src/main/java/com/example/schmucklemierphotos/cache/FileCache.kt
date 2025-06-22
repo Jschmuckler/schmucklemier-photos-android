@@ -22,6 +22,7 @@ class FileCache(
         private const val CACHE_DIR_NAME = "gcp_file_cache"
         private const val DEFAULT_MAX_SIZE_MB = 500 // 500MB default
         private const val METADATA_EXTENSION = ".meta"
+        private const val LARGE_FILE_THRESHOLD = 40 * 1024 * 1024 // 40MB threshold for large files
         
         // Convert max size from MB to bytes
         private fun mbToBytes(mb: Int): Long = mb.toLong() * 1024 * 1024
@@ -105,6 +106,44 @@ class FileCache(
      */
     suspend fun contains(key: String): Boolean = withContext(Dispatchers.IO) {
         getCacheFile(key).exists()
+    }
+    
+    /**
+     * Checks if a file is considered "large" (over 40MB threshold)
+     * First checks the cached file if available, otherwise queries GCP for file metadata
+     * @param key The cache key (file path)
+     * @param gcpStorageManager The GCP storage manager to use for checking remote file size
+     * @param account The Google account for authentication
+     * @param bucketName The GCP bucket name
+     * @return True if the file is large (over 40MB)
+     */
+    suspend fun isLargeFile(
+        key: String,
+        gcpStorageManager: com.example.schmucklemierphotos.GCPStorageManager,
+        account: com.google.android.gms.auth.api.signin.GoogleSignInAccount,
+        bucketName: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // First check if the file is in cache
+            val cachedFile = getCacheFile(key)
+            if (cachedFile.exists()) {
+                // Check the local file size
+                return@withContext cachedFile.length() > LARGE_FILE_THRESHOLD
+            }
+            
+            // File is not in cache, use the GCPStorageManager to check size
+            Log.d(TAG, "File not in cache, checking size on GCP: $key")
+            return@withContext gcpStorageManager.isFileLargerThan(
+                account,
+                bucketName,
+                key,
+                LARGE_FILE_THRESHOLD
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking file size: ${e.message}", e)
+            // If we can't determine the size, assume it's not large
+            return@withContext false
+        }
     }
 
     /**

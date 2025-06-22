@@ -48,7 +48,6 @@ import com.example.schmucklemierphotos.model.GalleryItem
 import com.example.schmucklemierphotos.model.GalleryRepository
 import com.example.schmucklemierphotos.ui.gallery.GalleryScreen
 import com.example.schmucklemierphotos.ui.gallery.GalleryViewModel
-import com.example.schmucklemierphotos.ui.gallery.ImageViewerScreen
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
@@ -57,7 +56,6 @@ import com.google.android.gms.common.api.Scope
 import com.google.api.services.storage.StorageScopes
 import com.example.schmucklemierphotos.BuildConfig
 import com.example.schmucklemierphotos.ui.gallery.MediaViewerScreen
-import com.example.schmucklemierphotos.ui.gallery.VideoPlayerScreen
 import com.example.schmucklemierphotos.ui.settings.SettingsManager
 import com.example.schmucklemierphotos.ui.theme.SchmucklemierPhotosTheme
 import kotlinx.coroutines.CoroutineScope
@@ -66,6 +64,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
+import java.io.File
 
 class MainActivity : FragmentActivity() {
     
@@ -73,12 +72,15 @@ class MainActivity : FragmentActivity() {
     private companion object {
         private const val TAG = "MainActivity"
         private const val BUCKET_NAME = "schmucklemier-long-term"
+        private const val STORAGE_PERMISSION_REQUEST_CODE = 100
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
     }
 
     private lateinit var gcpAuthManager: GCPAuthenticationManager
     private lateinit var gcpStorageManager: GCPStorageManager
     private lateinit var biometricManager: BiometricLoginManager
     private lateinit var galleryRepository: GalleryRepository
+    private lateinit var downloadManager: com.example.schmucklemierphotos.download.DownloadManager
     
     // Use the ViewModel for gallery operations
     private val galleryViewModel: GalleryViewModel by viewModels { 
@@ -186,6 +188,10 @@ class MainActivity : FragmentActivity() {
             gcpStorageManager = GCPStorageManager(this, gcpAuthManager)
             galleryRepository = GalleryRepository(gcpStorageManager)
             biometricManager = BiometricLoginManager(this)
+            downloadManager = com.example.schmucklemierphotos.download.DownloadManager.getInstance(this)
+            
+            // Request notification permission for Android 13+
+            checkNotificationPermission()
             
             // Check if we should skip authentication based on remember login setting
             if (shouldSkipAuthentication()) {
@@ -323,6 +329,103 @@ class MainActivity : FragmentActivity() {
                                     onClose = { 
                                         galleryViewModel.clearSelectedImage()
                                         galleryViewModel.clearSelectedVideo()
+                                    },
+                                    onShare = { url, item, _ ->
+                                        // Check if file is already in cache
+                                        val fileCache = com.example.schmucklemierphotos.cache.FileCache(this@MainActivity)
+                                        
+                                        // Handle file sharing based on size and cache status
+                                        CoroutineScope(Dispatchers.Main).launch {
+                                            try {
+                                                // Check if the file is too large for direct sharing
+                                                val isLargeFile = fileCache.isLargeFile(
+                                                    item.path,
+                                                    gcpStorageManager,
+                                                    account,
+                                                    BUCKET_NAME
+                                                )
+                                                
+                                                if (isLargeFile) {
+                                                    // Show message that file is too large for direct sharing
+                                                    Toast.makeText(
+                                                        this@MainActivity, 
+                                                        "This file is too large to share directly (>40MB). Please download it first.",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                    return@launch
+                                                }
+                                                
+                                                // Check if file is already in cache
+                                                val cachedFile = fileCache.getFile(item.path)
+                                                
+                                                // If file is in cache, share it directly
+                                                if (cachedFile != null) {
+                                                    // File is cached, create content URI and share
+                                                    shareFileFromCache(cachedFile, item)
+                                                } else {
+                                                    // Show progress indicator
+                                                    Toast.makeText(
+                                                        this@MainActivity, 
+                                                        "Preparing file for sharing...",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                    
+                                                    // Download file to cache first
+                                                    withContext(Dispatchers.IO) {
+                                                        try {
+                                                            val fileData = gcpStorageManager.getFileContent(
+                                                                account, 
+                                                                BUCKET_NAME,
+                                                                item.path
+                                                            )
+                                                            
+                                                            val mimeType = when(item) {
+                                                                is GalleryItem.ImageFile -> item.mimeType ?: "image/*"
+                                                                is GalleryItem.VideoFile -> item.mimeType ?: "video/*"
+                                                                else -> null
+                                                            }
+                                                            
+                                                            val cachedFile = fileCache.putFile(item.path, fileData, mimeType)
+                                                            
+                                                            // Now share the cached file
+                                                            withContext(Dispatchers.Main) {
+                                                                shareFileFromCache(cachedFile, item)
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            Log.e(TAG, "Error downloading file for sharing: ${e.message}")
+                                                            withContext(Dispatchers.Main) {
+                                                                // Fallback to sharing URL
+                                                                Toast.makeText(
+                                                                    this@MainActivity, 
+                                                                    "Unable to share file directly. Sharing URL instead.",
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
+                                                                
+                                                                shareUrl(url)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Error sharing file: ${e.message}")
+                                                // Fallback to sharing URL
+                                                shareUrl(url)
+                                            }
+                                        }
+                                    },
+                                    onDownload = { url, item ->
+                                        downloadFileToDevice(url, item)
+                                    },
+                                    onNavigateToSettings = {
+                                        // Navigate to settings fragment
+                                        navigateToSettings()
+                                    },
+                                    onLogout = {
+                                        performLogout()
+                                        
+                                        // Clear remembered login by clearing the last authentication time
+                                        val sharedPrefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                                        sharedPrefs.edit().remove(PREF_LAST_AUTH_TIME).apply()
                                     }
                                 )
                             }
@@ -443,6 +546,11 @@ class MainActivity : FragmentActivity() {
         
         // Cancel any pending auto-logout
         cancelAutoLogoutTimer()
+        
+        // Unbind from download service
+        if (this::downloadManager.isInitialized) {
+            downloadManager.unbindService()
+        }
         
         // If authenticated, save the current time for remember login feature
         if (isAuthenticated.value && authenticatedAccount.value != null) {
@@ -585,6 +693,278 @@ class MainActivity : FragmentActivity() {
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         resetAutoLogoutTimer()
         return super.dispatchTouchEvent(ev)
+    }
+    
+    /**
+     * Helper method to share a URL
+     */
+    private fun shareUrl(url: String) {
+        val shareIntent = android.content.Intent().apply {
+            action = android.content.Intent.ACTION_SEND
+            putExtra(android.content.Intent.EXTRA_TEXT, url)
+            type = "text/plain"
+        }
+        startActivity(android.content.Intent.createChooser(shareIntent, "Share media URL"))
+    }
+    
+    /**
+     * Helper method to share a file from the cache
+     */
+    private fun shareFileFromCache(cachedFile: File, item: GalleryItem) {
+        try {
+            // Create content URI for the file using FileProvider
+            val fileUri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "${applicationContext.packageName}.fileprovider",
+                cachedFile
+            )
+            
+            // Determine MIME type
+            val mimeType = when(item) {
+                is GalleryItem.ImageFile -> item.mimeType ?: "image/*"
+                is GalleryItem.VideoFile -> item.mimeType ?: "video/*"
+                is GalleryItem.DocumentFile -> item.mimeType ?: "application/octet-stream"
+                else -> "application/octet-stream"
+            }
+            
+            // Create share intent
+            val shareIntent = android.content.Intent().apply {
+                action = android.content.Intent.ACTION_SEND
+                putExtra(android.content.Intent.EXTRA_STREAM, fileUri)
+                type = mimeType
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            
+            startActivity(android.content.Intent.createChooser(shareIntent, "Share via"))
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sharing file: ${e.message}")
+            Toast.makeText(
+                this,
+                "Error sharing file: ${e.message}",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    
+    /**
+     * Check and request notification permission for Android 13+
+     */
+    private fun checkNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                // Request notification permission
+                androidx.core.app.ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                    NOTIFICATION_PERMISSION_REQUEST_CODE
+                )
+            }
+        }
+    }
+
+    /**
+     * Helper method to download a file to the device's Downloads folder
+     * Uses the DownloadManager to handle downloads in the background
+     */
+    private fun downloadFileToDevice(url: String, item: GalleryItem) {
+        // Check notification permission first for Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            // Store the download request info for when permission is granted
+            pendingDownloadUrl = url
+            pendingDownloadItem = item
+            
+            // Request permission
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_REQUEST_CODE
+            )
+            return
+        }
+        
+        // For Android 10+ (Q), we don't need WRITE_EXTERNAL_STORAGE permission
+        val needsStoragePermission = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q
+        
+        if (needsStoragePermission && 
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            // Store the download request info for when permission is granted
+            pendingDownloadUrl = url
+            pendingDownloadItem = item
+            
+            // Request permission
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                STORAGE_PERMISSION_REQUEST_CODE
+            )
+            return
+        }
+        
+        // Permission is granted or not needed, proceed with download using the DownloadManager
+        val account = authenticatedAccount.value
+        if (account != null) {
+            Toast.makeText(this, "Starting download...", Toast.LENGTH_SHORT).show()
+            downloadManager.downloadFile(url, item, account, BUCKET_NAME)
+        } else {
+            Toast.makeText(this, "Authentication error. Please sign in again.", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    // Store pending download request for permission callback
+    private var pendingDownloadUrl: String? = null
+    private var pendingDownloadItem: GalleryItem? = null
+    
+    /**
+     * Handle permission request results
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        
+        when (requestCode) {
+            STORAGE_PERMISSION_REQUEST_CODE -> {
+                // Check if permission was granted
+                if (grantResults.isNotEmpty() && 
+                    grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    
+                    // Permission granted, proceed with pending download if any
+                    val url = pendingDownloadUrl
+                    val item = pendingDownloadItem
+                    
+                    if (url != null && item != null) {
+                        // Check if we also need notification permission
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                            androidx.core.content.ContextCompat.checkSelfPermission(
+                                this,
+                                android.Manifest.permission.POST_NOTIFICATIONS
+                            ) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            // Request notification permission
+                            androidx.core.app.ActivityCompat.requestPermissions(
+                                this,
+                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                                NOTIFICATION_PERMISSION_REQUEST_CODE
+                            )
+                        } else {
+                            // All permissions granted, proceed with download
+                            startDownload(url, item)
+                        }
+                    }
+                } else {
+                    // Permission denied
+                    Toast.makeText(
+                        this,
+                        "Storage permission is required to download files",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            
+            NOTIFICATION_PERMISSION_REQUEST_CODE -> {
+                // Check if permission was granted
+                if (grantResults.isNotEmpty() && 
+                    grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    
+                    // Permission granted, proceed with pending download if any
+                    val url = pendingDownloadUrl
+                    val item = pendingDownloadItem
+                    
+                    if (url != null && item != null) {
+                        // Check if we also need storage permission
+                        val needsStoragePermission = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q
+                        
+                        if (needsStoragePermission && 
+                            androidx.core.content.ContextCompat.checkSelfPermission(
+                                this,
+                                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                            ) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            // Request storage permission
+                            androidx.core.app.ActivityCompat.requestPermissions(
+                                this,
+                                arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                                STORAGE_PERMISSION_REQUEST_CODE
+                            )
+                        } else {
+                            // All permissions granted, proceed with download
+                            startDownload(url, item)
+                        }
+                    }
+                } else {
+                    // Permission denied
+                    Toast.makeText(
+                        this,
+                        "Notification permission is required to show download progress",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    
+                    // Clear pending download request
+                    pendingDownloadUrl = null
+                    pendingDownloadItem = null
+                }
+            }
+        }
+    }
+    
+    /**
+     * Helper to start a download after permissions are granted
+     */
+    private fun startDownload(url: String, item: GalleryItem) {
+        // Use DownloadManager to start the download
+        val account = authenticatedAccount.value
+        if (account != null) {
+            Toast.makeText(this, "Starting download...", Toast.LENGTH_SHORT).show()
+            downloadManager.downloadFile(url, item, account, BUCKET_NAME)
+            
+            // Clear pending request
+            pendingDownloadUrl = null
+            pendingDownloadItem = null
+        } else {
+            Toast.makeText(this, "Authentication error. Please sign in again.", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    /**
+     * This method is no longer used - downloads are now handled by the DownloadService
+     * Kept for reference
+     */
+    private fun startFileDownload(url: String, item: GalleryItem) {
+        // This functionality has been replaced by the DownloadManager
+        // and DownloadService implementation for background downloads
+        Log.d(TAG, "Legacy download method called - using DownloadManager instead")
+        downloadFileToDevice(url, item)
+    }
+    
+    /**
+     * Notify that download is complete
+     */
+    private fun notifyDownloadComplete(file: File) {
+        Toast.makeText(
+            this,
+            "Download complete: ${file.name}",
+            Toast.LENGTH_LONG
+        ).show()
+        
+        // Make file visible in Downloads app
+        val mediaScanIntent = android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+        val contentUri = android.net.Uri.fromFile(file)
+        mediaScanIntent.data = contentUri
+        sendBroadcast(mediaScanIntent)
     }
     
     /**
