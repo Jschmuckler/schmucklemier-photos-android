@@ -84,7 +84,7 @@ class MainActivity : FragmentActivity() {
     
     // Use the ViewModel for gallery operations
     private val galleryViewModel: GalleryViewModel by viewModels { 
-        GalleryViewModel.Factory(this, lazy { galleryRepository })
+        GalleryViewModel.Factory(this, lazy { galleryRepository }, gcpStorageManager)
     }
 
     // UI state - using ViewModel pattern for configuration change survival
@@ -459,6 +459,9 @@ class MainActivity : FragmentActivity() {
                                         // Clear remembered login by clearing the last authentication time
                                         val sharedPrefs = getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
                                         sharedPrefs.edit().remove(PREF_LAST_AUTH_TIME).apply()
+                                    },
+                                    onDownload = { url, item ->
+                                        downloadFileToDevice(url, item)
                                     }
                                 )
                             }
@@ -642,7 +645,6 @@ class MainActivity : FragmentActivity() {
             
             // Schedule the auto logout
             handler.postDelayed(autoLogoutRunnable!!, autoLogoutMs)
-            println("$TAG: Auto logout scheduled for $autoLogoutMinutes minutes from now")
         }
     }
     
@@ -652,7 +654,6 @@ class MainActivity : FragmentActivity() {
     private fun cancelAutoLogoutTimer() {
         autoLogoutRunnable?.let {
             handler.removeCallbacks(it)
-            println("$TAG: Auto logout timer cancelled")
         }
     }
     

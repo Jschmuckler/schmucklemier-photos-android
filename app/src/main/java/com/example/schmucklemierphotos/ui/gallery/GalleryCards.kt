@@ -3,6 +3,9 @@ package com.example.schmucklemierphotos.ui.gallery
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Movie
@@ -75,20 +79,28 @@ fun GalleryCard(
     imageLoader: ImageLoader? = null,
     thumbnailUrl: String? = null,
     showFilenames: Boolean = true,
-    onClick: () -> Unit
+    isSelected: Boolean = false,
+    isInSelectionMode: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     when (item) {
         is GalleryItem.Folder -> FolderCard(
             folder = item, 
             showFilename = true,  // Always show folder names
-            onClick = onClick
+            isInSelectionMode = isInSelectionMode,
+            onClick = onClick,
+            onLongClick = onLongClick
         )
         is GalleryItem.ImageFile -> ImageCard(
             image = item, 
             imageLoader = imageLoader, 
             thumbnailUrl = thumbnailUrl,
             showFilename = showFilenames,  // Respect setting for images with thumbnails
-            onClick = onClick
+            isSelected = isSelected,
+            isInSelectionMode = isInSelectionMode,
+            onClick = onClick,
+            onLongClick = onLongClick
         )
         is GalleryItem.VideoFile -> FileCard(
             file = item,
@@ -97,21 +109,30 @@ fun GalleryCard(
             imageLoader = imageLoader,
             thumbnailUrl = thumbnailUrl,
             showFilename = showFilenames,  // Respect setting for videos with thumbnails
-            onClick = onClick
+            isSelected = isSelected,
+            isInSelectionMode = isInSelectionMode,
+            onClick = onClick,
+            onLongClick = onLongClick
         )
         is GalleryItem.DocumentFile -> FileCard(
             file = item,
             icon = Icons.Default.PictureAsPdf,
             iconTint = Color(0xFFEF5350),
             showFilename = true,  // Always show names for documents
-            onClick = onClick
+            isSelected = isSelected,
+            isInSelectionMode = isInSelectionMode,
+            onClick = onClick,
+            onLongClick = onLongClick
         )
         is GalleryItem.OtherFile -> FileCard(
             file = item,
             icon = Icons.Default.InsertDriveFile,
             iconTint = Color(0xFF78909C),
             showFilename = true,  // Always show names for other files
-            onClick = onClick
+            isSelected = isSelected,
+            isInSelectionMode = isInSelectionMode,
+            onClick = onClick,
+            onLongClick = onLongClick
         )
     }
 }
@@ -120,12 +141,26 @@ fun GalleryCard(
  * Card component for displaying a folder
  */
 @Composable
-fun FolderCard(folder: GalleryItem.Folder, showFilename: Boolean = true, onClick: () -> Unit) {
+fun FolderCard(
+    folder: GalleryItem.Folder, 
+    showFilename: Boolean = true, 
+    isInSelectionMode: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
+) {
+    // Create an interaction source to disable ripple when handling gestures manually
+    val interactionSource = remember { MutableInteractionSource() }
+    
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(4.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { onLongClick() }
+                )
+            }
+            .padding(4.dp),
     ) {
         Column {
             Box(
@@ -170,15 +205,26 @@ fun ImageCard(
     imageLoader: ImageLoader?, 
     thumbnailUrl: String? = null,
     showFilename: Boolean = true,
-    onClick: () -> Unit
+    isSelected: Boolean = false,
+    isInSelectionMode: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     var isLoading by remember { mutableStateOf(true) }
     var hasError by remember { mutableStateOf(false) }
     
+    // Create an interaction source to disable ripple when handling gestures manually
+    val interactionSource = remember { MutableInteractionSource() }
+    
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { onLongClick() }
+                )
+            }
     ) {
         Column {
             Box(
@@ -242,6 +288,23 @@ fun ImageCard(
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
+                
+                // Show selection indicator if in selection mode
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.3f))
+                    )
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Selected",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .align(Alignment.Center)
+                    )
+                }
             }
             
             // Always show filename for images without thumbnails, otherwise respect setting
@@ -274,12 +337,23 @@ fun FileCard(
     imageLoader: ImageLoader? = null,
     thumbnailUrl: String? = null,
     showFilename: Boolean = true,
-    onClick: () -> Unit
+    isSelected: Boolean = false,
+    isInSelectionMode: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
+    // Create an interaction source to disable ripple when handling gestures manually
+    val interactionSource = remember { MutableInteractionSource() }
+    
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = { onLongClick() }
+                )
+            }
     ) {
         Column {
             Box(
@@ -356,6 +430,23 @@ fun FileCard(
                         contentDescription = "File",
                         modifier = Modifier.size(64.dp),
                         tint = iconTint
+                    )
+                }
+                
+                // Show selection indicator if selected
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.3f))
+                    )
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Selected",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .align(Alignment.Center)
                     )
                 }
             }

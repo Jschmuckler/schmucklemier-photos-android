@@ -259,4 +259,20 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
     fun navigateToPath(path: String) {
         _currentPath.value = path
     }
+    
+    /**
+     * Gets the storage manager for direct access
+     * @return The GCPStorageManager instance
+     */
+    fun getStorageManager(): GCPStorageManager {
+        return storageManager
+    }
+    
+    /**
+     * Gets the current bucket name (used for file size calculations)
+     * @return The current bucket name or empty string if not available
+     */
+    fun getCurrentBucketName(): String {
+        return "schmucklemier-long-term"
+    }
 }

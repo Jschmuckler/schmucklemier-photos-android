@@ -136,7 +136,10 @@ class GCPStorageManager(
                 
                 // First check the file size
                 val metadata = storage.objects().get(bucketName, objectPath).execute()
-                val fileSize = metadata.size
+                
+                // Properly extract the size as a string and convert to Long
+                val sizeValue = metadata.get("size")?.toString()
+                val fileSize = sizeValue?.toLongOrNull() ?: 0L
                 
                 if (fileSize > maxSize) {
                     Log.w(TAG, "File size ($fileSize bytes) exceeds maxSize ($maxSize bytes), consider using streaming methods")
@@ -221,7 +224,10 @@ class GCPStorageManager(
                 
                 // Get object metadata to get file size
                 val metadata = storage.objects().get(bucketName, objectPath).execute()
-                val fileSize = metadata.size ?: 0L
+                
+                // Properly extract the size as a string and convert to Long
+                val sizeValue = metadata.get("size")?.toString()
+                val fileSize = sizeValue?.toLongOrNull() ?: 0L
                 
                 // Use MediaHttpDownloader with custom settings
                 val getRequest = storage.objects().get(bucketName, objectPath)
@@ -303,7 +309,10 @@ class GCPStorageManager(
         try {
             // Get file metadata
             val metadata = getFileMetadata(account, bucketName, objectPath)
-            val fileSize = metadata.size
+            
+            // Properly extract the size as a string and convert to Long
+            val sizeValue = metadata.get("size")?.toString()
+            val fileSize = sizeValue?.toLongOrNull() ?: 0L
             
             Log.d(TAG, "File size check for $objectPath: $fileSize bytes vs threshold $thresholdBytes bytes")
             return@withContext fileSize > thresholdBytes
@@ -312,6 +321,105 @@ class GCPStorageManager(
             Log.e(TAG, "Error checking file size: ${e.message}", e)
             // If we can't determine the size, assume it's not large
             return@withContext false
+        }
+    }
+    
+    /**
+     * Gets the file size for a given object path, accounting for thumbnails and compressed versions
+     * @param account The Google Sign-In account to use for authentication
+     * @param bucketName The name of the GCS bucket
+     * @param objectPath The path to the object within the bucket
+     * @return The file size in bytes, or -1 if the size couldn't be determined
+     */
+    suspend fun getFileSize(
+        account: GoogleSignInAccount,
+        bucketName: String,
+        objectPath: String
+    ): Long = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Getting file size for path: $objectPath")
+            
+            // Check if this is a thumbnail path and get the original path if it is
+            val path = if (objectPath.contains("/THUMBS/") || objectPath.contains("/COMPRESSED/")) {
+                // We want the original file size, not the thumbnail or compressed version
+                
+                // First, let's handle THUMBS folders
+                if (objectPath.contains("/THUMBS/")) {
+                    val thumbsIndex = objectPath.indexOf("/THUMBS/")
+                    val beforeThumbs = objectPath.substring(0, thumbsIndex)
+                    val filenameWithExt = objectPath.substringAfterLast("/")
+                    val filename = filenameWithExt.substringBeforeLast(".")
+                    
+                    // Try common image extensions to find the original file
+                    val possibleExtensions = listOf(".jpg", ".jpeg", ".png", ".gif", ".heic")
+                    var originalPath: String? = null
+                    
+                    for (ext in possibleExtensions) {
+                        val tryPath = "$beforeThumbs/$filename$ext"
+                        try {
+                            // Check if this path exists
+                            getFileMetadata(account, bucketName, tryPath)
+                            originalPath = tryPath
+                            Log.d(TAG, "Found original file for thumbnail: $originalPath")
+                            break
+                        } catch (e: Exception) {
+                            // This path doesn't exist, try next extension
+                            continue
+                        }
+                    }
+                    
+                    // If we found an original path, use it; otherwise fall back to original path
+                    originalPath ?: objectPath
+                }
+                // Handle COMPRESSED folders
+                else if (objectPath.contains("/COMPRESSED/")) {
+                    val compressedIndex = objectPath.indexOf("/COMPRESSED/")
+                    val beforeCompressed = objectPath.substring(0, compressedIndex)
+                    val filenameWithExt = objectPath.substringAfterLast("/")
+                    val filename = filenameWithExt.substringBeforeLast(".")
+                    
+                    // Try common video extensions to find the original file
+                    val possibleExtensions = listOf(".mp4", ".mov", ".avi", ".mkv")
+                    var originalPath: String? = null
+                    
+                    for (ext in possibleExtensions) {
+                        val tryPath = "$beforeCompressed/$filename$ext"
+                        try {
+                            // Check if this path exists
+                            getFileMetadata(account, bucketName, tryPath)
+                            originalPath = tryPath
+                            Log.d(TAG, "Found original file for compressed video: $originalPath")
+                            break
+                        } catch (e: Exception) {
+                            // This path doesn't exist, try next extension
+                            continue
+                        }
+                    }
+                    
+                    // If we found an original path, use it; otherwise fall back to original path
+                    originalPath ?: objectPath
+                }
+                else {
+                    objectPath
+                }
+            } else {
+                objectPath
+            }
+            
+            // Get file metadata for the original file
+            Log.d(TAG, "Fetching metadata for: $path")
+            val metadata = getFileMetadata(account, bucketName, path)
+            
+
+            val sizeValue = metadata.get("size")?.toString()
+            val size = sizeValue?.toLongOrNull() ?: -1L
+            
+            Log.d(TAG, "File size for $path: $size bytes (from metadata: $sizeValue)")
+            return@withContext size
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting file size for $objectPath: ${e.message}", e)
+            return@withContext -1L
         }
     }
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -39,11 +40,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.example.schmucklemierphotos.model.GalleryItem
@@ -72,7 +75,8 @@ fun GalleryScreen(
     onNavigateToVideo: (GalleryItem.VideoFile) -> Unit,
     onNavigateToDocument: (GalleryItem.DocumentFile) -> Unit,
     onNavigateToSettings: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onDownload: (String, GalleryItem) -> Unit
 ) {
     // Provide CompositionLocal values for child components
     CompositionLocalProvider(
@@ -95,6 +99,9 @@ fun GalleryScreen(
     // Menu state
     var showMenu by remember { mutableStateOf(false) }
     
+    // Coroutine scope for launching async tasks
+    val coroutineScope = rememberCoroutineScope()
+    
     // Title based on current path
     val title = remember(currentPath) {
         if (currentPath.isEmpty()) {
@@ -105,9 +112,31 @@ fun GalleryScreen(
         }
     }
     
+    // Check if we're in selection mode
+    val isInSelectionMode by galleryViewModel.isInSelectionMode.collectAsState()
+    val selectedItems by galleryViewModel.selectedItems.collectAsState()
+    val selectedItemsSize by galleryViewModel.selectedItemsSize.collectAsState()
+    
+    // Update selected items size when selection changes
+    LaunchedEffect(selectedItems) {
+        if (selectedItems.isNotEmpty()) {
+            try {
+                // Now that we've fixed the size calculation, we can enable it again
+                galleryViewModel.updateSelectedItemsSize(account)
+                Log.d(TAG, "Calculating size for ${selectedItems.size} selected items")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating selected items size: ${e.message}", e)
+                // Continue gracefully without updating the size
+            }
+        }
+    }
+    
     // Handle system back button
     BackHandler(enabled = true) {
-        if (!galleryViewModel.navigateBack()) {
+        if (isInSelectionMode) {
+            // If in selection mode, exit selection mode first
+            galleryViewModel.toggleSelectionMode()
+        } else if (!galleryViewModel.navigateBack()) {
             // We're at the root level, can't go back further
             // Could show a confirmation dialog to exit the app
         }
@@ -123,61 +152,119 @@ fun GalleryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title) },
+                title = { 
+                    if (isInSelectionMode) {
+                        // Show selection info with count and size
+                        val sizeFormatted = if (selectedItemsSize > 0) {
+                            " (${galleryViewModel.getFormattedSelectedSize()})"
+                        } else {
+                            ""
+                        }
+                        
+                        if (selectedItems.size == 1) {
+                            Text("1 item selected$sizeFormatted")
+                        } else {
+                            Text("${selectedItems.size} items selected$sizeFormatted")
+                        }
+                    } else {
+                        // Normal title
+                        Text(title)
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = {
-                        // Navigate back using history, will go to root if at first entry
-                        galleryViewModel.navigateBack()
+                        if (isInSelectionMode) {
+                            // Exit selection mode
+                            galleryViewModel.toggleSelectionMode()
+                        } else {
+                            // Navigate back using history, will go to root if at first entry
+                            galleryViewModel.navigateBack()
+                        }
                     }) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Navigate back"
+                            contentDescription = if (isInSelectionMode) "Exit selection mode" else "Navigate back"
                         )
                     }
                 },
                 actions = {
-                    // Menu button with logout option
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "Menu"
-                        )
-                    }
-                    
-                    // Dropdown menu
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        // Settings option
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            onClick = {
-                                showMenu = false
-                                onNavigateToSettings()
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Settings,
-                                    contentDescription = null
-                                )
+                    if (isInSelectionMode) {
+                        // Selection mode actions
+                        // Download button
+                        IconButton(onClick = {
+                            // Process each selected file for download
+                            coroutineScope.launch {
+                                try {
+                                    // For each selected item, get its URL and download it
+                                    for (path in selectedItems) {
+                                        // Find the GalleryItem corresponding to this path
+                                        val item = items.find { it.path == path }
+                                        if (item != null) {
+                                            // Get authenticated URL for the item
+                                            val url = galleryViewModel.getMediaUrlForDownload(account, bucketName, path)
+                                            if (url != null) {
+                                                // Download the item using the provided callback
+                                                onDownload(url, item)
+                                            }
+                                        }
+                                    }
+                                    // Exit selection mode after starting all downloads
+                                    galleryViewModel.toggleSelectionMode()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error downloading files: ${e.message}", e)
+                                }
                             }
-                        )
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Download selected"
+                            )
+                        }
+                    } else {
+                        // Normal mode actions
+                        // Menu button with logout option
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Menu"
+                            )
+                        }
                         
-                        // Logout option
-                        DropdownMenuItem(
-                            text = { Text("Logout") },
-                            onClick = {
-                                showMenu = false
-                                onLogout()
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Logout,
-                                    contentDescription = null
-                                )
-                            }
-                        )
+                        // Dropdown menu
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            // Settings option
+                            DropdownMenuItem(
+                                text = { Text("Settings") },
+                                onClick = {
+                                    showMenu = false
+                                    onNavigateToSettings()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+                            
+                            // Logout option
+                            DropdownMenuItem(
+                                text = { Text("Logout") },
+                                onClick = {
+                                    showMenu = false
+                                    onLogout()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Logout,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -260,13 +347,37 @@ fun GalleryScreen(
                         items = items,
                         gridState = gridState,
                         imageLoader = imageLoader,
-                        onFolderClick = { folder ->
-                            Log.d(TAG, "Navigating to folder: ${folder.path}")
-                            galleryViewModel.navigateToPath(folder.path, gridState)
+                        isInSelectionMode = isInSelectionMode,
+                        selectedItems = selectedItems,
+                        onItemClick = { item ->
+                            if (isInSelectionMode) {
+                                if (item !is GalleryItem.Folder) {
+                                    // Toggle selection when in selection mode
+                                    galleryViewModel.toggleItemSelection(item, account)
+                                } else {
+                                    // Still navigate to folders in selection mode
+                                    galleryViewModel.navigateToPath(item.path, gridState)
+                                }
+                            } else {
+                                // Normal click behavior
+                                when (item) {
+                                    is GalleryItem.ImageFile -> onNavigateToImage(item)
+                                    is GalleryItem.VideoFile -> onNavigateToVideo(item)
+                                    is GalleryItem.DocumentFile -> onNavigateToDocument(item)
+                                    is GalleryItem.Folder -> galleryViewModel.navigateToPath(item.path, gridState)
+                                    else -> { /* Other files not handled */ }
+                                }
+                            }
                         },
-                        onImageClick = onNavigateToImage,
-                        onVideoClick = onNavigateToVideo,
-                        onDocumentClick = onNavigateToDocument
+                        onItemLongClick = { item ->
+                            // Start selection mode on long press (if not already in it)
+                            if (!isInSelectionMode) {
+                                galleryViewModel.toggleSelectionMode(item, account)
+                            } else if (item !is GalleryItem.Folder) {
+                                // Toggle selection if already in selection mode
+                                galleryViewModel.toggleItemSelection(item , account)
+                            }
+                        }
                     )
                 }
             }
@@ -309,10 +420,10 @@ private fun GalleryGrid(
     items: List<GalleryItem>,
     gridState: LazyGridState,
     imageLoader: ImageLoader,
-    onFolderClick: (GalleryItem.Folder) -> Unit,
-    onImageClick: (GalleryItem.ImageFile) -> Unit,
-    onVideoClick: (GalleryItem.VideoFile) -> Unit,
-    onDocumentClick: (GalleryItem.DocumentFile) -> Unit
+    isInSelectionMode: Boolean = false,
+    selectedItems: Set<String> = emptySet(),
+    onItemClick: (GalleryItem) -> Unit,
+    onItemLongClick: (GalleryItem) -> Unit
 ) {
     // Get view model and account info from parent components
     val galleryViewModel = LocalGalleryViewModel.current
@@ -359,23 +470,18 @@ private fun GalleryGrid(
             // Get the thumbnail URL for this item if available
             val thumbnailUrl = thumbnailUrls[item.path]
             
+            // Check if this item is selected
+            val isItemSelected = selectedItems.contains(item.path)
+            
             GalleryCard(
                 item = item,
                 imageLoader = imageLoader,
                 thumbnailUrl = thumbnailUrl,
                 showFilenames = settings.showFilenames,
-                onClick = {
-                    when (item) {
-                        is GalleryItem.Folder -> onFolderClick(item)
-                        is GalleryItem.ImageFile -> onImageClick(item)
-                        is GalleryItem.VideoFile -> onVideoClick(item)
-                        is GalleryItem.DocumentFile -> onDocumentClick(item)
-                        is GalleryItem.OtherFile -> {
-                            // Other file types not handled directly
-                            Log.d(TAG, "Selected file: ${item.path}")
-                        }
-                    }
-                }
+                isSelected = isItemSelected,
+                isInSelectionMode = isInSelectionMode,
+                onClick = { onItemClick(item) },
+                onLongClick = { onItemLongClick(item) }
             )
         }
     }

@@ -29,7 +29,8 @@ import java.io.IOException
  */
 class GalleryViewModel(
     private val context: Context,
-    private val repository: GalleryRepository
+    private val repository: GalleryRepository,
+    private val storageManager: GCPStorageManager? = null // Optional direct reference to storage manager
 ) : ViewModel() {
 
     // Settings manager for app settings
@@ -40,6 +41,18 @@ class GalleryViewModel(
     
     // Track files that are currently being downloaded to prevent duplicate downloads
     private val downloadsInProgress = Collections.synchronizedSet(mutableSetOf<String>())
+    
+    // Multi-selection state
+    private val _isInSelectionMode = MutableStateFlow(false)
+    val isInSelectionMode: StateFlow<Boolean> = _isInSelectionMode.asStateFlow()
+    
+    // Selected items for multi-selection
+    private val _selectedItems = MutableStateFlow<Set<String>>(emptySet())
+    val selectedItems: StateFlow<Set<String>> = _selectedItems.asStateFlow()
+    
+    // Total selected items size
+    private val _selectedItemsSize = MutableStateFlow(0L)
+    val selectedItemsSize: StateFlow<Long> = _selectedItemsSize.asStateFlow()
 
     // Selected image for viewing
     private val _selectedImage = MutableStateFlow<GalleryItem.ImageFile?>(null)
@@ -657,13 +670,165 @@ class GalleryViewModel(
         currentNavIndex = -1
         _currentNavState.value = null
     }
+    
+    /**
+     * Toggles selection mode on/off
+     */
+    fun toggleSelectionMode(initialItem: GalleryItem? = null, account: GoogleSignInAccount? = null) {
+        if (!_isInSelectionMode.value) {
+            // Entering selection mode
+            _isInSelectionMode.value = true
+            
+            // If initial item is provided, select it
+            if (initialItem != null && initialItem !is GalleryItem.Folder) {
+                toggleItemSelection(initialItem, account)
+            }
+        } else {
+            // Exiting selection mode
+            _isInSelectionMode.value = false
+            clearSelection()
+        }
+    }
+    
+    /**
+     * Toggles selection of a specific item
+     */
+    fun toggleItemSelection(item: GalleryItem, account: GoogleSignInAccount?) {
+        // Only allow selecting files, not folders
+        if (item is GalleryItem.Folder) return
+        
+        // Toggle selection
+        val currentSelection = _selectedItems.value.toMutableSet()
+        if (currentSelection.contains(item.path)) {
+            currentSelection.remove(item.path)
+        } else {
+            currentSelection.add(item.path)
+        }
+        _selectedItems.value = currentSelection
+        
+        // Recalculate total size if needed
+        if (currentSelection.isNotEmpty()) {
+            updateSelectedItemsSize(account)
+        } else {
+            _selectedItemsSize.value = 0
+            
+            // If no items are selected, exit selection mode
+            if (currentSelection.isEmpty()) {
+                _isInSelectionMode.value = false
+            }
+        }
+    }
+    
+    /**
+     * Clears all selected items
+     */
+    fun clearSelection() {
+        _selectedItems.value = emptySet()
+        _selectedItemsSize.value = 0
+    }
+    
+    /**
+     * Updates the total size of all selected items
+     * @param account The GoogleSignInAccount to use for API calls, or null to skip size calculation
+     */
+    fun updateSelectedItemsSize(account: GoogleSignInAccount?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (account == null) {
+                    Log.d("GalleryViewModel", "No account provided, skipping size calculation")
+                    return@launch
+                }
+                
+                // Get direct storage manager access - without this we can't proceed
+                val gcpStorageManager = storageManager ?: return@launch
+                
+                var totalSize = 0L
+                val bucketName = repository.getCurrentBucketName()
+                
+                Log.d("GalleryViewModel", "Calculating total size for ${_selectedItems.value.size} selected items")
+                
+                // Process each selected item to get its size
+                for (path in _selectedItems.value) {
+                    try {
+                        // Use the same approach as when downloading files
+                        val size = gcpStorageManager.getFileSize(account, bucketName, path)
+                        
+                        if (size > 0) {
+                            totalSize += size
+                            Log.d("GalleryViewModel", "Size for $path: $size bytes")
+                        } else {
+                            Log.w("GalleryViewModel", "Got zero or negative size for $path")
+                        }
+                    } catch (e: Exception) {
+                        // Log error but continue with other files
+                        Log.e("GalleryViewModel", "Error getting size for $path: ${e.message}")
+                    }
+                }
+                
+                Log.d("GalleryViewModel", "Total size of all selected items: $totalSize bytes")
+                _selectedItemsSize.value = totalSize
+                
+            } catch (e: Exception) {
+                Log.e("GalleryViewModel", "Error calculating selected items size: ${e.message}")
+                // Don't set a default size - just keep the current value
+            }
+        }
+    }
+    
+    /**
+     * Formats the total selected size as a human-readable string
+     */
+    fun getFormattedSelectedSize(): String {
+        val sizeBytes = _selectedItemsSize.value
+        
+        // If size is not available, show a placeholder
+        if (sizeBytes <= 0) {
+            return "Multiple files"
+        }
+        
+        return when {
+            sizeBytes < 1024 -> "$sizeBytes B"
+            sizeBytes < 1024 * 1024 -> String.format("%.1f KB", sizeBytes / 1024f)
+            sizeBytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", sizeBytes / (1024 * 1024f))
+            else -> String.format("%.1f GB", sizeBytes / (1024 * 1024 * 1024f))
+        }
+    }
+    
+    /**
+     * Gets a media URL for downloading a file
+     * This is a suspending function that returns the URL directly
+     * @param account The GoogleSignInAccount to use for authentication
+     * @param bucketName The bucket name
+     * @param filePath The path to the file
+     * @return The authenticated URL for downloading the file, or null if it couldn't be obtained
+     */
+    suspend fun getMediaUrlForDownload(
+        account: GoogleSignInAccount,
+        bucketName: String,
+        filePath: String
+    ): String? {
+        return try {
+            // Check if it's a video file
+            if (repository.isVideoFile(filePath)) {
+                // For videos, use streaming URL
+                repository.getStreamingUrl(account, bucketName, filePath)
+            } else {
+                // For other files, use regular image URL
+                repository.getImageUrl(account, bucketName, filePath)
+            }
+        } catch (e: Exception) {
+            Log.e("GalleryViewModel", "Error getting download URL for $filePath: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Factory for creating GalleryViewModel with the proper dependencies
      */
     class Factory(
         private val context: Context,
-        private val repositoryLazy: Lazy<GalleryRepository>? = null
+        private val repositoryLazy: Lazy<GalleryRepository>? = null,
+        private val storageManager: GCPStorageManager? = null
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -673,10 +838,22 @@ class GalleryViewModel(
                 } else {
                     // Create a new repository if one wasn't provided
                     val authManager = GCPAuthenticationManager(context)
-                    val storageManager = GCPStorageManager(context, authManager)
-                    GalleryRepository(storageManager)
+                    val newStorageManager = GCPStorageManager(context, authManager)
+                    GalleryRepository(newStorageManager)
                 }
-                return GalleryViewModel(context, repository) as T
+                // Use the provided storage manager or create a new one
+                val actualStorageManager = storageManager ?: if (repositoryLazy != null) {
+                    // Try to extract it from repository, but don't throw an error if it fails
+                    try {
+                        val getStorageManagerMethod = GalleryRepository::class.java.getMethod("getStorageManager")
+                        getStorageManagerMethod.invoke(repository) as? GCPStorageManager
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                return GalleryViewModel(context, repository, actualStorageManager) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }
