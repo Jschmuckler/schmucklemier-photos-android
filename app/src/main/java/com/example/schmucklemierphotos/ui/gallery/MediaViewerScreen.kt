@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import coil.ImageLoader
 import com.example.schmucklemierphotos.model.GalleryItem
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
@@ -137,6 +138,18 @@ fun MediaViewerScreen(
     
     // Calculate current item for title display
     val currentItem = previewableItems.getOrNull(currentPageIndex) ?: return
+    
+    // Check if we're zoomed in (more than 15% from base scale)
+    val isZoomedIn = scale > minScale * 1.15f
+    
+    // Handle back button to zoom out if zoomed in
+    BackHandler(enabled = isZoomedIn) {
+        // If zoomed in, zoom out first instead of closing
+        scale = minScale
+        offsetX = 0f
+        offsetY = 0f
+        Log.d(TAG, "Back button pressed - zooming out")
+    }
     
     // Use a simple Box instead of Scaffold to remove the app bar completely
     Box(
