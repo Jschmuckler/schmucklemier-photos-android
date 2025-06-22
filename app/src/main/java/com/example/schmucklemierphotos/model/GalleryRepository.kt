@@ -77,9 +77,9 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
                 val directories = storageManager.listBucketDirectories(account, bucketName, prefix = prefix)
                 val files = storageManager.listBucketFiles(account, bucketName, prefix = prefix)
 
-                // Process directories into folder items and filter out THUMBS folders
+                // Process directories into folder items and filter out special folders
                 val folderItems = directories
-                    .filter { !ThumbnailUtils.isThumbnailFolder(it) }  // Filter out THUMBS folders
+                    .filter { !ThumbnailUtils.isHiddenFolder(it) }  // Filter out THUMBS and COMPRESSED folders
                     .map { dirPath ->
                         GalleryItem.Folder(
                             name = dirPath,
@@ -90,10 +90,11 @@ class GalleryRepository(private val storageManager: GCPStorageManager) {
 
                 // Process files into file items
                 val fileItems = files.mapNotNull { fileObject ->
-                    // Skip files that are the prefix itself, empty prefixes, or thumbnail files
+                    // Skip files that are the prefix itself, empty prefixes, or special files (thumbs/compressed)
                     if (fileObject.name == prefix || 
                         fileObject.name.endsWith("/") || 
-                        ThumbnailUtils.isThumbnailFile(fileObject.name)) {
+                        ThumbnailUtils.isThumbnailFile(fileObject.name) ||
+                        ThumbnailUtils.isCompressedFile(fileObject.name)) {
                         return@mapNotNull null
                     }
 

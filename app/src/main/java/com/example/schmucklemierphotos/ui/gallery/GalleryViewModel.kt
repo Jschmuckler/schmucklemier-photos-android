@@ -130,11 +130,32 @@ class GalleryViewModel(
                 
                 // Check if this is a video file
                 if (repository.isVideoFile(filePath)) {
-                    // For videos, use streaming URL instead of direct download to prevent OOM
+                    // For videos, look for compressed version first, then fall back to streaming URL
+                    val compressedPaths = ThumbnailUtils.generateCompressedVideoPaths(filePath)
+                    
+                    // Try each compressed path in priority order (ts -> mp4 -> webm)
+                    for (compressedPath in compressedPaths) {
+                        try {
+                            // Check if this compressed version exists
+                            val compressedUrl = repository.getImageUrl(account, bucketName, compressedPath)
+                            if (compressedUrl.isNotEmpty()) {
+                                // Found a compressed version - use it
+                                _mediaUrls.value = _mediaUrls.value + (filePath to compressedUrl)
+                                Log.d("GalleryViewModel", "Using compressed video: $compressedPath for $filePath")
+                                return@launch
+                            }
+                        } catch (e: Exception) {
+                            // This compressed version doesn't exist, try next one
+                            Log.d("GalleryViewModel", "Compressed version not found: $compressedPath")
+                            // Continue to next format
+                        }
+                    }
+                    
+                    // No compressed version found, use streaming URL for original
                     try {
                         val streamingUrl = repository.getStreamingUrl(account, bucketName, filePath)
                         _mediaUrls.value = _mediaUrls.value + (filePath to streamingUrl)
-                        Log.d("GalleryViewModel", "Using streaming URL for video ${filePath}")
+                        Log.d("GalleryViewModel", "Using streaming URL for original video: $filePath")
                         return@launch
                     } catch (e: Exception) {
                         Log.e("GalleryViewModel", "Error getting streaming URL for video: ${e.message}")
